@@ -37,6 +37,9 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # 저장소에 Pages 가 아직 켜져 있지 않아도 워크플로에서 자동으로 활성화한다.
+          enablement: true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
