@@ -1,0 +1,24 @@
+{
+  "name": "nukki-cutter",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "브라우저에서 100% 로컬로 동작하는 이미지 누끼(배경 제거) 도구",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@imgly/background-removal": "^1.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
