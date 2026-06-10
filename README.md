@@ -39,6 +39,19 @@ npm run preview    # 빌드 결과 미리보기
 
 `dist/` 폴더는 어떤 정적 호스팅(사내 인트라넷, 파일 서버 등)에도 그대로 올릴 수 있습니다.
 
+## 자동 배포 (GitHub Pages)
+
+`main` 브랜치에 푸시하면 `.github/workflows/deploy.yml` 이 자동으로 빌드해
+GitHub Pages 에 배포합니다. → **https://jacky92q.github.io/nukki-cutter/**
+
+> **최초 1회만 수동 설정이 필요합니다** (GitHub 보안 정책상 워크플로 토큰으로는
+> Pages 를 처음 켤 수 없습니다):
+>
+> 저장소 **Settings → Pages → Build and deployment → Source** 를
+> **`GitHub Actions`** 로 선택하세요.
+>
+> 한 번 켜두면 이후에는 `main` 에 푸시할 때마다 완전 자동으로 배포됩니다.
+
 ## 사용 방법
 
 1. 이미지를 화면에 끌어다 놓거나, 영역을 클릭해 파일을 선택합니다.
