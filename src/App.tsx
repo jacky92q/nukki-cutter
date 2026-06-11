@@ -124,7 +124,7 @@ export default function App() {
                   onClick={() => setMode('interactive')}
                 >
                   지정
-                  <small>원하는 오브젝트 직접 선택</small>
+                  <small>브러시로 직접 칠하기</small>
                 </button>
               </div>
               <button className="btn btn--ghost" onClick={reset}>

@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  SamSession,
-  compositeCutout,
-  type MaskResult,
-  type SamBox,
-  type SamPoint,
-} from '../lib/samCutout'
 import { outputName, triggerDownload, type Loaded } from '../lib/files'
 
-type Tool = 'box' | 'add' | 'remove'
-type SessionStatus = 'loading' | 'ready' | 'error'
+type Tool = 'brush' | 'erase'
 
 interface Props {
   source: Loaded
@@ -17,90 +9,100 @@ interface Props {
 
 const NAVY = '#1a2a52'
 
-/** 마스크(원본 크기 0/1)를 네이비 반투명으로 칠한 오프스크린 캔버스를 만든다. */
-function buildMaskTint(mask: MaskResult): HTMLCanvasElement {
-  const c = document.createElement('canvas')
-  c.width = mask.width
-  c.height = mask.height
-  const ctx = c.getContext('2d')!
-  const img = ctx.createImageData(mask.width, mask.height)
-  const d = img.data
-  for (let i = 0; i < mask.width * mask.height; i++) {
-    if (mask.data[i]) {
-      d[i * 4] = 26
-      d[i * 4 + 1] = 42
-      d[i * 4 + 2] = 82
-      d[i * 4 + 3] = 120
-    }
-  }
-  ctx.putImageData(img, 0, 0)
-  return c
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = url
+  })
 }
 
-/** 지정 누끼(SAM) — 박스/점으로 원하는 오브젝트만 골라 분할한다. */
+/**
+ * 지정 누끼(수동 브러시) — 모델 없이 100% 브라우저에서 동작한다.
+ * 남기고 싶은 영역을 브러시로 칠하면, 그 영역만 남긴 투명 PNG 를 만든다.
+ * 어떤 환경(WebGPU 미지원·네트워크 차단)에서도 항상 동작한다.
+ */
 export default function InteractivePanel({ source }: Props) {
-  const [sessionStatus, setSessionStatus] = useState<SessionStatus>('loading')
-  const [modelRatio, setModelRatio] = useState(0)
-  const [sessionError, setSessionError] = useState<string | null>(null)
-
-  const [tool, setTool] = useState<Tool>('box')
-  const [points, setPoints] = useState<SamPoint[]>([])
-  const [box, setBox] = useState<SamBox | null>(null)
-  const [draftBox, setDraftBox] = useState<SamBox | null>(null)
-
-  const [decoding, setDecoding] = useState(false)
+  const [tool, setTool] = useState<Tool>('brush')
+  const [brush, setBrush] = useState(48) // 화면 기준 지름(px)
+  const [hasPaint, setHasPaint] = useState(false)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
+  const [working, setWorking] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const resultBlob = useRef<Blob | null>(null)
 
-  const sessionRef = useRef<SamSession | null>(null)
-  const maskTintRef = useRef<HTMLCanvasElement | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const dragging = useRef(false)
-  const dragStart = useRef<{ x: number; y: number } | null>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+  const maskRef = useRef<HTMLCanvasElement | null>(null) // 원본 해상도 마스크
+  const drawing = useRef(false)
+  const lastPt = useRef<{ x: number; y: number } | null>(null)
+  const cursor = useRef<{ x: number; y: number } | null>(null)
 
-  // ---- 세션(이미지 임베딩) 준비 ----
+  // 오버레이(마스크 미리보기 + 브러시 커서) 다시 그리기
+  const drawOverlay = useCallback(() => {
+    const stage = stageRef.current
+    const overlay = overlayRef.current
+    const img = imgRef.current
+    if (!stage || !overlay || !img) return
+    const cw = stage.clientWidth
+    const ch = stage.clientHeight
+    if (cw === 0 || ch === 0) return
+
+    const dpr = window.devicePixelRatio || 1
+    overlay.width = cw * dpr
+    overlay.height = ch * dpr
+    const ctx = overlay.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, cw, ch)
+
+    // 칠한 영역(마스크)을 네이비 반투명으로
+    const mask = maskRef.current
+    if (mask) {
+      ctx.globalAlpha = 0.45
+      ctx.drawImage(mask, 0, 0, cw, ch)
+      ctx.globalAlpha = 1
+    }
+
+    // 브러시 커서(현재 크기 표시)
+    if (cursor.current) {
+      ctx.beginPath()
+      ctx.arc(cursor.current.x, cursor.current.y, brush / 2, 0, Math.PI * 2)
+      ctx.strokeStyle = tool === 'brush' ? NAVY : '#dc2626'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+  }, [brush, tool])
+
+  // 이미지가 로드되면 마스크 캔버스를 원본 크기로 초기화
+  const initMask = useCallback(() => {
+    const img = imgRef.current
+    if (!img || !img.naturalWidth) return
+    const c = document.createElement('canvas')
+    c.width = img.naturalWidth
+    c.height = img.naturalHeight
+    maskRef.current = c
+    setHasPaint(false)
+    drawOverlay()
+  }, [drawOverlay])
+
+  // 소스가 바뀌면 결과/마스크 초기화
   useEffect(() => {
-    let cancelled = false
-    setSessionStatus('loading')
-    setModelRatio(0)
-    setSessionError(null)
-    sessionRef.current = null
-    maskTintRef.current = null
-    setPoints([])
-    setBox(null)
-    setDraftBox(null)
     setResultUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev)
       return null
     })
     resultBlob.current = null
-
-    SamSession.create(source.file, (r) => {
-      if (!cancelled) setModelRatio(r)
-    })
-      .then((session) => {
-        if (cancelled) return
-        sessionRef.current = session
-        setSessionStatus('ready')
-      })
-      .catch((err) => {
-        console.error(err)
-        if (cancelled) return
-        const detail =
-          err instanceof Error ? err.message : String(err ?? '')
-        setSessionError(
-          '모델을 불러오지 못했어요. 네트워크를 확인하고 새로고침해 주세요.' +
-            (detail ? `\n(상세: ${detail.slice(0, 160)})` : ''),
-        )
-        setSessionStatus('error')
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [source])
+    setError(null)
+    maskRef.current = null
+    setHasPaint(false)
+    cursor.current = null
+    lastPt.current = null
+    // 마스크는 이미지 onLoad 에서 초기화된다. 이미 로드돼 있으면 즉시.
+    if (imgRef.current?.complete) initMask()
+  }, [source, initMask])
 
   useEffect(() => {
     return () => {
@@ -108,266 +110,253 @@ export default function InteractivePanel({ source }: Props) {
     }
   }, [resultUrl])
 
-  // ---- 오버레이 다시 그리기 ----
-  const redraw = useCallback(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    const img = imgRef.current
-    if (!canvas || !container || !img) return
-    const cw = container.clientWidth
-    const ch = container.clientHeight
-    if (cw === 0 || ch === 0) return
-
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = cw * dpr
-    canvas.height = ch * dpr
-    const ctx = canvas.getContext('2d')!
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, cw, ch)
-
-    const natW = img.naturalWidth || 1
-    const s = cw / natW // 화면 픽셀 / 원본 픽셀
-
-    // 마스크 미리보기
-    if (maskTintRef.current) {
-      ctx.drawImage(maskTintRef.current, 0, 0, cw, ch)
-    }
-
-    // 박스 (확정 또는 드래그 중)
-    const b = draftBox ?? box
-    if (b) {
-      ctx.save()
-      ctx.strokeStyle = NAVY
-      ctx.lineWidth = 2
-      ctx.setLineDash([6, 4])
-      ctx.strokeRect(
-        Math.min(b.x1, b.x2) * s,
-        Math.min(b.y1, b.y2) * s,
-        Math.abs(b.x2 - b.x1) * s,
-        Math.abs(b.y2 - b.y1) * s,
-      )
-      ctx.restore()
-    }
-
-    // 점
-    for (const p of points) {
-      ctx.beginPath()
-      ctx.arc(p.x * s, p.y * s, 7, 0, Math.PI * 2)
-      ctx.fillStyle = p.label === 1 ? '#15a34a' : '#dc2626'
-      ctx.fill()
-      ctx.lineWidth = 2
-      ctx.strokeStyle = '#ffffff'
-      ctx.stroke()
-    }
-  }, [points, box, draftBox])
-
+  // 리사이즈 시 오버레이 다시 그리기
   useEffect(() => {
-    redraw()
-    const container = containerRef.current
-    if (!container) return
-    const ro = new ResizeObserver(() => redraw())
-    ro.observe(container)
+    drawOverlay()
+    const stage = stageRef.current
+    if (!stage) return
+    const ro = new ResizeObserver(() => drawOverlay())
+    ro.observe(stage)
     return () => ro.disconnect()
-  }, [redraw])
+  }, [drawOverlay])
 
-  // ---- 좌표 변환 ----
-  const toNatural = useCallback((e: React.PointerEvent) => {
-    const canvas = canvasRef.current!
+  // 좌표 변환(화면 → 원본 픽셀)
+  const getPos = useCallback((e: React.PointerEvent) => {
+    const overlay = overlayRef.current!
     const img = imgRef.current!
-    const rect = canvas.getBoundingClientRect()
-    const natW = img.naturalWidth
-    const natH = img.naturalHeight
-    const x = ((e.clientX - rect.left) / rect.width) * natW
-    const y = ((e.clientY - rect.top) / rect.height) * natH
+    const rect = overlay.getBoundingClientRect()
+    const dx = e.clientX - rect.left
+    const dy = e.clientY - rect.top
+    const scale = img.naturalWidth / rect.width // 원본px / 화면px
     return {
-      x: Math.max(0, Math.min(natW, x)),
-      y: Math.max(0, Math.min(natH, y)),
+      dx,
+      dy,
+      nx: (dx / rect.width) * img.naturalWidth,
+      ny: (dy / rect.height) * img.naturalHeight,
+      scale,
     }
   }, [])
 
-  const ready = sessionStatus === 'ready'
+  const paintTo = useCallback(
+    (nx: number, ny: number, scale: number) => {
+      const mask = maskRef.current
+      if (!mask) return
+      const mctx = mask.getContext('2d')
+      if (!mctx) return
+      const radius = (brush / 2) * scale // 원본 픽셀 반지름
+      mctx.lineCap = 'round'
+      mctx.lineJoin = 'round'
+      mctx.lineWidth = radius * 2
+      if (tool === 'brush') {
+        mctx.globalCompositeOperation = 'source-over'
+        mctx.strokeStyle = NAVY
+        mctx.fillStyle = NAVY
+      } else {
+        mctx.globalCompositeOperation = 'destination-out'
+        mctx.strokeStyle = '#000'
+        mctx.fillStyle = '#000'
+      }
+      const last = lastPt.current
+      if (last) {
+        mctx.beginPath()
+        mctx.moveTo(last.x, last.y)
+        mctx.lineTo(nx, ny)
+        mctx.stroke()
+      } else {
+        mctx.beginPath()
+        mctx.arc(nx, ny, radius, 0, Math.PI * 2)
+        mctx.fill()
+      }
+      mctx.globalCompositeOperation = 'source-over'
+      lastPt.current = { x: nx, y: ny }
+      setHasPaint(true)
+    },
+    [brush, tool],
+  )
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (!ready || tool !== 'box') return
       e.currentTarget.setPointerCapture(e.pointerId)
-      const p = toNatural(e)
-      dragging.current = true
-      dragStart.current = p
-      setDraftBox({ x1: p.x, y1: p.y, x2: p.x, y2: p.y })
+      drawing.current = true
+      lastPt.current = null
+      const p = getPos(e)
+      cursor.current = { x: p.dx, y: p.dy }
+      paintTo(p.nx, p.ny, p.scale)
+      drawOverlay()
     },
-    [ready, tool, toNatural],
+    [getPos, paintTo, drawOverlay],
   )
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragging.current || !dragStart.current) return
-      const p = toNatural(e)
-      setDraftBox({
-        x1: dragStart.current.x,
-        y1: dragStart.current.y,
-        x2: p.x,
-        y2: p.y,
-      })
+      const p = getPos(e)
+      cursor.current = { x: p.dx, y: p.dy }
+      if (drawing.current) paintTo(p.nx, p.ny, p.scale)
+      drawOverlay()
     },
-    [toNatural],
+    [getPos, paintTo, drawOverlay],
   )
 
-  const onPointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!ready) return
-      if (tool === 'box') {
-        if (!dragging.current || !dragStart.current) return
-        dragging.current = false
-        const p = toNatural(e)
-        const start = dragStart.current
-        dragStart.current = null
-        setDraftBox(null)
-        const x1 = Math.min(start.x, p.x)
-        const y1 = Math.min(start.y, p.y)
-        const x2 = Math.max(start.x, p.x)
-        const y2 = Math.max(start.y, p.y)
-        // 너무 작은 박스는 클릭 실수로 보고 무시.
-        if (x2 - x1 < 5 || y2 - y1 < 5) return
-        setBox({ x1, y1, x2, y2 })
-      } else {
-        const p = toNatural(e)
-        setPoints((prev) => [
-          ...prev,
-          { x: p.x, y: p.y, label: tool === 'add' ? 1 : 0 },
-        ])
-      }
-    },
-    [ready, tool, toNatural],
-  )
+  const endStroke = useCallback(() => {
+    drawing.current = false
+    lastPt.current = null
+  }, [])
 
-  const hasPrompt = points.length > 0 || box !== null
+  const onPointerLeave = useCallback(() => {
+    cursor.current = null
+    drawOverlay()
+  }, [drawOverlay])
 
-  const clearPrompts = useCallback(() => {
-    setPoints([])
-    setBox(null)
-    setDraftBox(null)
-    maskTintRef.current = null
+  const clearMask = useCallback(() => {
+    const mask = maskRef.current
+    if (mask) {
+      const mctx = mask.getContext('2d')
+      mctx?.clearRect(0, 0, mask.width, mask.height)
+    }
+    setHasPaint(false)
     setResultUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev)
       return null
     })
     resultBlob.current = null
-    redraw()
-  }, [redraw])
+    drawOverlay()
+  }, [drawOverlay])
 
-  const runSegment = useCallback(async () => {
-    const session = sessionRef.current
-    if (!session || !hasPrompt) return
-    setDecoding(true)
+  const apply = useCallback(async () => {
+    const mask = maskRef.current
+    const img = imgRef.current
+    if (!mask || !img || !hasPaint) return
+    setWorking(true)
+    setError(null)
     try {
-      const mask = await session.segment(points, box)
-      maskTintRef.current = buildMaskTint(mask)
-      redraw()
-      const blob = await compositeCutout(source.url, mask)
+      const w = img.naturalWidth
+      const h = img.naturalHeight
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('canvas 컨텍스트를 만들 수 없어요.')
+
+      // 원본을 그린 뒤, 칠하지 않은 픽셀을 투명 처리
+      const src = img.complete ? img : await loadImage(source.url)
+      ctx.drawImage(src, 0, 0, w, h)
+      const out = ctx.getImageData(0, 0, w, h)
+      const mctx = mask.getContext('2d')!
+      const md = mctx.getImageData(0, 0, w, h).data
+      const od = out.data
+      for (let i = 0; i < w * h; i++) {
+        if (md[i * 4 + 3] === 0) od[i * 4 + 3] = 0
+      }
+      ctx.putImageData(out, 0, 0)
+
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('PNG 생성 실패'))),
+          'image/png',
+        ),
+      )
       resultBlob.current = blob
       const url = URL.createObjectURL(blob)
       setResultUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev)
         return url
       })
+      triggerDownload(blob, outputName(source.file.name))
     } catch (err) {
       console.error(err)
+      const detail = err instanceof Error ? err.message : String(err ?? '')
+      setError('누끼 생성에 실패했어요.' + (detail ? ` (${detail})` : ''))
     } finally {
-      setDecoding(false)
+      setWorking(false)
     }
-  }, [points, box, hasPrompt, source.url, redraw])
+  }, [hasPaint, source.url])
 
   return (
     <div className="panel">
       <p className="hint">
-        {tool === 'box'
-          ? '오브젝트를 사각형으로 감싸 보세요. 필요하면 점 도구로 더 다듬을 수 있어요.'
-          : tool === 'add'
-            ? '남기고 싶은 부분을 클릭하세요 (포함).'
-            : '빼고 싶은 부분을 클릭하세요 (제외).'}
+        남기고 싶은 부분을 브러시로 칠하세요. 칠한 영역만 남고 나머지는 투명해집니다.
+        잘못 칠했으면 지우개로 지우면 돼요.
       </p>
 
       <div className="seg-toolbar">
         <div className="seg-tools">
           <button
-            className={`chip${tool === 'box' ? ' chip--on' : ''}`}
-            onClick={() => setTool('box')}
-            disabled={!ready}
+            className={`chip${tool === 'brush' ? ' chip--on' : ''}`}
+            onClick={() => setTool('brush')}
           >
-            ▭ 박스
+            🖌 브러시
           </button>
           <button
-            className={`chip${tool === 'add' ? ' chip--on' : ''}`}
-            onClick={() => setTool('add')}
-            disabled={!ready}
+            className={`chip${tool === 'erase' ? ' chip--on' : ''}`}
+            onClick={() => setTool('erase')}
           >
-            ＋ 포함 점
+            🧽 지우개
           </button>
-          <button
-            className={`chip${tool === 'remove' ? ' chip--on' : ''}`}
-            onClick={() => setTool('remove')}
-            disabled={!ready}
-          >
-            － 제외 점
-          </button>
+          <label className="brush-size">
+            굵기
+            <input
+              type="range"
+              min={8}
+              max={140}
+              value={brush}
+              onChange={(e) => setBrush(Number(e.target.value))}
+            />
+          </label>
         </div>
-        <button className="chip chip--ghost" onClick={clearPrompts} disabled={!hasPrompt}>
-          초기화
+        <button className="chip chip--ghost" onClick={clearMask} disabled={!hasPaint}>
+          전체 지우기
         </button>
       </div>
 
       <div className="canvas-grid">
         <figure className="canvas">
-          <figcaption className="canvas__label">지정</figcaption>
-          <div className="canvas__frame seg-stage" ref={containerRef}>
-            <img ref={imgRef} src={source.url} alt="원본 이미지" onLoad={redraw} />
-            <canvas
-              ref={canvasRef}
-              className={`seg-overlay${ready ? '' : ' seg-overlay--disabled'}`}
-              style={{ cursor: tool === 'box' ? 'crosshair' : 'pointer' }}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-            />
-            {sessionStatus === 'loading' && (
-              <div className="seg-loading">
-                <div className="spinner" />
-                <span>
-                  모델 준비 중…{' '}
-                  {modelRatio > 0 ? `${Math.round(modelRatio * 100)}%` : ''}
-                </span>
-              </div>
-            )}
+          <figcaption className="canvas__label">칠하기</figcaption>
+          <div className="media-frame">
+            <div className="brush-stage" ref={stageRef}>
+              <img
+                ref={imgRef}
+                src={source.url}
+                alt="원본 이미지"
+                onLoad={initMask}
+                draggable={false}
+              />
+              <canvas
+                ref={overlayRef}
+                className="brush-overlay"
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={endStroke}
+                onPointerCancel={endStroke}
+                onPointerLeave={onPointerLeave}
+              />
+            </div>
           </div>
         </figure>
 
         <figure className="canvas">
           <figcaption className="canvas__label">결과 (투명 배경)</figcaption>
-          <div className="canvas__frame canvas__frame--checker">
+          <div className="media-frame media-frame--checker">
             {resultUrl ? (
-              <img src={resultUrl} alt="선택한 오브젝트만 남긴 결과" />
+              <img src={resultUrl} alt="칠한 영역만 남긴 결과" />
             ) : (
               <div className="canvas__pending">
-                {decoding ? '분할 중…' : '영역을 지정하고 누끼를 눌러 주세요'}
+                {working ? '만드는 중…' : '칠한 뒤 “누끼 만들기”를 눌러 주세요'}
               </div>
             )}
           </div>
         </figure>
       </div>
 
-      {sessionStatus === 'error' && sessionError && (
-        <p className="error-note">{sessionError}</p>
-      )}
+      {error && <p className="error-note">{error}</p>}
 
       <div className="controls">
         <div className="actions actions--full">
           <button
             className="btn btn--primary"
-            onClick={runSegment}
-            disabled={!ready || !hasPrompt || decoding}
+            onClick={apply}
+            disabled={!hasPaint || working}
           >
-            {decoding ? '분할 중…' : '이 영역 누끼'}
+            {working ? '만드는 중…' : '누끼 만들기'}
           </button>
           {resultUrl && resultBlob.current && (
             <button
@@ -377,11 +366,15 @@ export default function InteractivePanel({ source }: Props) {
                 triggerDownload(resultBlob.current, outputName(source.file.name))
               }
             >
-              다운로드
+              다시 다운로드
             </button>
           )}
         </div>
       </div>
+
+      {resultUrl && (
+        <p className="done-note">✓ 누끼 완료! 투명 배경 PNG 가 다운로드되었어요.</p>
+      )}
     </div>
   )
 }

@@ -11,7 +11,8 @@ interface Props {
 /** 자동 누끼(ISNet) — 사진 전체에서 주요 피사체를 자동으로 잡아 배경을 제거한다. */
 export default function AutoPanel({ source }: Props) {
   const [status, setStatus] = useState<Status>('ready')
-  const [quality, setQuality] = useState<Quality>('best')
+  // 기본값은 가볍고 빠른 모델 — 첫 실행에서 다운로드/추론이 더 빨라 성공 확률이 높다.
+  const [quality, setQuality] = useState<Quality>('fast')
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +55,12 @@ export default function AutoPanel({ source }: Props) {
       triggerDownload(blob, outputName(source.file.name))
     } catch (err) {
       console.error(err)
-      setError('배경 제거 중 문제가 발생했어요. 다른 이미지로 다시 시도해 주세요.')
+      const detail = err instanceof Error ? err.message : String(err ?? '')
+      setError(
+        '배경 제거에 실패했어요. 자동 모드는 처음 한 번 모델(수십 MB)을 내려받아요. ' +
+          '네트워크가 막혀 있다면 “지정” 모드(브러시)를 쓰면 모델 없이 누끼할 수 있어요.' +
+          (detail ? `\n(상세: ${detail.slice(0, 200)})` : ''),
+      )
       setStatus('error')
     }
   }, [source, quality])
@@ -64,13 +70,13 @@ export default function AutoPanel({ source }: Props) {
       <div className="canvas-grid">
         <figure className="canvas">
           <figcaption className="canvas__label">원본</figcaption>
-          <div className="canvas__frame">
+          <div className="media-frame">
             <img src={source.url} alt="원본 이미지" />
           </div>
         </figure>
         <figure className="canvas">
           <figcaption className="canvas__label">결과 (투명 배경)</figcaption>
-          <div className="canvas__frame canvas__frame--checker">
+          <div className="media-frame media-frame--checker">
             {resultUrl ? (
               <img src={resultUrl} alt="배경이 제거된 결과 이미지" />
             ) : (
@@ -95,6 +101,12 @@ export default function AutoPanel({ source }: Props) {
             />
           </div>
         </div>
+      )}
+
+      {status === 'ready' && (
+        <p className="hint">
+          처음 실행 시 모델을 한 번 내려받아요(수십 MB). 이후에는 캐시되어 빠릅니다.
+        </p>
       )}
 
       <div className="controls">

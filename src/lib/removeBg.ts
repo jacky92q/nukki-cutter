@@ -47,9 +47,8 @@ export async function cutout(
 ): Promise<Blob> {
   const config: Config = {
     model: MODEL_BY_QUALITY[quality],
-    // 가능하면 GPU(WebGPU)를 사용하고, 미지원 환경에서는 자동으로 CPU(WASM)로 폴백.
-    device: 'gpu',
-    // removeBackground 는 피사체(전경)만 남기고 배경을 투명하게 만든 PNG 를 돌려준다.
+    // device 는 지정하지 않는다. 기본값(CPU/WASM)이 어떤 브라우저에서도 동작한다.
+    // ('gpu'(WebGPU)를 강제하면 WebGPU 미지원 환경에서 즉시 실패한다.)
     output: {
       format: 'image/png',
     },
