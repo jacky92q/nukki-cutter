@@ -1,7 +1,4 @@
-import {
-  removeBackground,
-  type Config,
-} from '@imgly/background-removal'
+import type { Config } from '@imgly/background-removal'
 
 /**
  * 누끼(배경 제거) 처리 모듈.
@@ -63,5 +60,7 @@ export async function cutout(
     },
   }
 
+  // 무거운 누끼 엔진은 실제로 작업을 시작할 때만 동적으로 불러온다(초기 로딩 경량화).
+  const { removeBackground } = await import('@imgly/background-removal')
   return removeBackground(input, config)
 }

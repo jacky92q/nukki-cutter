@@ -1,85 +1,43 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { cutout, type ProgressInfo, type Quality } from './lib/removeBg'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { ACCEPTED, type Loaded } from './lib/files'
 
-type Status = 'idle' | 'loaded' | 'processing' | 'done' | 'error'
+// 모드별로 무거운 모델 코드를 분리해, 해당 모드에 들어갈 때만 불러온다.
+const AutoPanel = lazy(() => import('./components/AutoPanel'))
+const InteractivePanel = lazy(() => import('./components/InteractivePanel'))
 
-interface Loaded {
-  file: File
-  url: string
-}
-
-const ACCEPTED = ['image/png', 'image/jpeg', 'image/webp']
-
-/** 원본 파일명에서 확장자를 떼고 누끼 결과용 이름을 만든다. */
-function outputName(name: string): string {
-  const base = name.replace(/\.[^.]+$/, '')
-  return `${base || 'image'}-nukki.png`
-}
+type Mode = 'auto' | 'interactive'
 
 export default function App() {
-  const [status, setStatus] = useState<Status>('idle')
-  const [quality, setQuality] = useState<Quality>('best')
   const [source, setSource] = useState<Loaded | null>(null)
-  const [resultUrl, setResultUrl] = useState<string | null>(null)
-  const [progress, setProgress] = useState<ProgressInfo | null>(null)
+  const [mode, setMode] = useState<Mode>('auto')
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
-
   const inputRef = useRef<HTMLInputElement>(null)
-  // 자동 다운로드를 트리거하기 위한 숨겨진 앵커.
-  const downloadRef = useRef<HTMLAnchorElement>(null)
 
-  // 컴포넌트가 사라질 때 object URL 정리 (메모리 누수 방지).
   useEffect(() => {
     return () => {
       if (source) URL.revokeObjectURL(source.url)
-      if (resultUrl) URL.revokeObjectURL(resultUrl)
     }
-    // 언마운트 시 1회만 정리하면 충분하다.
+    // 언마운트 시 1회 정리.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const reset = useCallback(() => {
+  const acceptFile = useCallback((file: File) => {
+    if (!ACCEPTED.includes(file.type)) {
+      setError('PNG · JPG · WebP 이미지 파일만 사용할 수 있어요.')
+      return
+    }
+    setError(null)
     setSource((prev) => {
       if (prev) URL.revokeObjectURL(prev.url)
-      return null
+      return { file, url: URL.createObjectURL(file) }
     })
-    setResultUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev)
-      return null
-    })
-    setProgress(null)
-    setError(null)
-    setStatus('idle')
   }, [])
-
-  const acceptFile = useCallback(
-    (file: File) => {
-      if (!ACCEPTED.includes(file.type)) {
-        setError('PNG · JPG · WebP 이미지 파일만 사용할 수 있어요.')
-        setStatus('error')
-        return
-      }
-      setSource((prev) => {
-        if (prev) URL.revokeObjectURL(prev.url)
-        return { file, url: URL.createObjectURL(file) }
-      })
-      setResultUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev)
-        return null
-      })
-      setError(null)
-      setProgress(null)
-      setStatus('loaded')
-    },
-    [],
-  )
 
   const onPick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
       if (file) acceptFile(file)
-      // 같은 파일을 다시 선택해도 onChange 가 발화하도록 초기화.
       e.target.value = ''
     },
     [acceptFile],
@@ -95,39 +53,13 @@ export default function App() {
     [acceptFile],
   )
 
-  const start = useCallback(async () => {
-    if (!source) return
-    setStatus('processing')
+  const reset = useCallback(() => {
+    setSource((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url)
+      return null
+    })
     setError(null)
-    setProgress({ stage: '준비 중', ratio: 0 })
-    try {
-      const blob = await cutout(source.file, quality, setProgress)
-      const url = URL.createObjectURL(blob)
-      setResultUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev)
-        return url
-      })
-      setStatus('done')
-
-      // 결과가 나오면 자동으로 다운로드를 트리거한다.
-      requestAnimationFrame(() => {
-        const a = downloadRef.current
-        if (a) {
-          a.href = url
-          a.download = outputName(source.file.name)
-          a.click()
-        }
-      })
-    } catch (err) {
-      console.error(err)
-      setError(
-        '배경 제거 중 문제가 발생했어요. 다른 이미지로 다시 시도해 주세요.',
-      )
-      setStatus('error')
-    }
-  }, [source, quality])
-
-  const busy = status === 'processing'
+  }, [])
 
   return (
     <div className="page">
@@ -139,16 +71,14 @@ export default function App() {
           <div>
             <h1 className="brand__name">Nukki Cutter</h1>
             <p className="brand__tag">
-              브라우저 안에서만 동작하는 누끼 도구 · 이미지가 외부로 전송되지
-              않습니다
+              브라우저 안에서만 동작하는 누끼 도구 · 이미지가 외부로 전송되지 않습니다
             </p>
           </div>
         </div>
       </header>
 
       <main className="main">
-        {/* 1) 이미지 불러오기 영역 */}
-        {(status === 'idle' || status === 'error') && (
+        {!source ? (
           <section
             className={`dropzone${dragging ? ' dropzone--active' : ''}`}
             onClick={() => inputRef.current?.click()}
@@ -167,129 +97,55 @@ export default function App() {
             <div className="dropzone__icon" aria-hidden>
               ⬆
             </div>
-            <p className="dropzone__title">
-              이미지를 여기에 끌어다 놓으세요
-            </p>
+            <p className="dropzone__title">이미지를 여기에 끌어다 놓으세요</p>
             <p className="dropzone__sub">
               또는 클릭해서 사진첩·파일에서 선택 · PNG · JPG · WebP
             </p>
-            {status === 'error' && error && (
-              <p className="dropzone__error">{error}</p>
-            )}
+            {error && <p className="dropzone__error">{error}</p>}
           </section>
-        )}
-
-        {/* 2) 미리보기 + 작업 시작 */}
-        {source && status !== 'idle' && status !== 'error' && (
-          <section className="workspace">
-            <div className="canvas-grid">
-              <figure className="canvas">
-                <figcaption className="canvas__label">원본</figcaption>
-                <div className="canvas__frame">
-                  <img src={source.url} alt="원본 이미지" />
-                </div>
-              </figure>
-
-              <figure className="canvas">
-                <figcaption className="canvas__label">결과 (투명 배경)</figcaption>
-                <div className="canvas__frame canvas__frame--checker">
-                  {resultUrl ? (
-                    <img src={resultUrl} alt="배경이 제거된 결과 이미지" />
-                  ) : (
-                    <div className="canvas__pending">
-                      {busy ? '처리 중…' : '작업 시작을 눌러 주세요'}
-                    </div>
-                  )}
-                </div>
-              </figure>
-            </div>
-
-            {busy && progress && (
-              <div className="progress" aria-live="polite">
-                <div className="progress__row">
-                  <span>{progress.stage}</span>
-                  <span>{Math.round(progress.ratio * 100)}%</span>
-                </div>
-                <div className="progress__track">
-                  <div
-                    className="progress__bar"
-                    style={{ width: `${Math.max(4, progress.ratio * 100)}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="controls">
-              {status === 'loaded' && (
-                <fieldset className="quality" disabled={busy}>
-                  <legend>품질</legend>
-                  <label
-                    className={`quality__opt${
-                      quality === 'best' ? ' quality__opt--on' : ''
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="quality"
-                      checked={quality === 'best'}
-                      onChange={() => setQuality('best')}
-                    />
-                    최고 품질
-                    <small>디테일 정밀 · 조금 느림</small>
-                  </label>
-                  <label
-                    className={`quality__opt${
-                      quality === 'fast' ? ' quality__opt--on' : ''
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="quality"
-                      checked={quality === 'fast'}
-                      onChange={() => setQuality('fast')}
-                    />
-                    빠른 속도
-                    <small>가벼운 모델 · 빠름</small>
-                  </label>
-                </fieldset>
-              )}
-
-              <div className="actions">
-                {status === 'loaded' && (
-                  <button className="btn btn--primary" onClick={start}>
-                    작업 시작
-                  </button>
-                )}
-                {status === 'processing' && (
-                  <button className="btn btn--primary" disabled>
-                    배경 제거 중…
-                  </button>
-                )}
-                {status === 'done' && resultUrl && source && (
-                  <a
-                    className="btn btn--primary"
-                    href={resultUrl}
-                    download={outputName(source.file.name)}
-                  >
-                    다시 다운로드
-                  </a>
-                )}
+        ) : (
+          <>
+            <div className="modebar">
+              <div className="tabs" role="tablist">
                 <button
-                  className="btn btn--ghost"
-                  onClick={reset}
-                  disabled={busy}
+                  role="tab"
+                  aria-selected={mode === 'auto'}
+                  className={`tab${mode === 'auto' ? ' tab--on' : ''}`}
+                  onClick={() => setMode('auto')}
                 >
-                  새 이미지
+                  자동
+                  <small>주요 피사체 자동 인식</small>
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={mode === 'interactive'}
+                  className={`tab${mode === 'interactive' ? ' tab--on' : ''}`}
+                  onClick={() => setMode('interactive')}
+                >
+                  지정
+                  <small>원하는 오브젝트 직접 선택</small>
                 </button>
               </div>
+              <button className="btn btn--ghost" onClick={reset}>
+                새 이미지
+              </button>
             </div>
 
-            {status === 'done' && (
-              <p className="done-note">
-                ✓ 누끼 완료! 투명 배경 PNG 가 자동으로 다운로드되었어요.
-              </p>
-            )}
-          </section>
+            <Suspense
+              fallback={
+                <div className="panel-loading">
+                  <div className="spinner" />
+                  <span>불러오는 중…</span>
+                </div>
+              }
+            >
+              {mode === 'auto' ? (
+                <AutoPanel source={source} />
+              ) : (
+                <InteractivePanel source={source} />
+              )}
+            </Suspense>
+          </>
         )}
 
         <input
@@ -299,7 +155,6 @@ export default function App() {
           hidden
           onChange={onPick}
         />
-        <a ref={downloadRef} hidden aria-hidden />
       </main>
 
       <footer className="footer">
