@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { outputName, triggerDownload, type Loaded } from '../lib/files'
 import {
-  SamSession,
+  aiRegionCutout,
   compositeCutout,
-  type MaskResult,
-  type SamBox,
-  type SamPoint,
-} from '../lib/samCutout'
+  maskFromPaint,
+} from '../lib/maskCutout'
+import type { ProgressInfo } from '../lib/removeBg'
 
 type Tool = 'brush' | 'erase'
-type AiStatus = 'loading' | 'ready' | 'error'
 
 interface Props {
   source: Loaded
@@ -18,77 +16,10 @@ interface Props {
 /** 브러시 표시 색(배경과 겹치지 않게 선택 가능). 마스크 판정은 알파만 사용한다. */
 const COLORS = ['#1a2a52', '#dc2626', '#16a34a', '#f59e0b'] as const
 
-/** 칠한 마스크에서 SAM 프롬프트(박스 + 포함 점들)를 뽑는다. */
-function promptsFromMask(
-  mask: HTMLCanvasElement,
-): { box: SamBox; points: SamPoint[] } | null {
-  const w = mask.width
-  const h = mask.height
-  const ctx = mask.getContext('2d')
-  if (!ctx) return null
-  const d = ctx.getImageData(0, 0, w, h).data
-
-  let minX = w
-  let minY = h
-  let maxX = -1
-  let maxY = -1
-  let n = 0
-  const sampled: Array<[number, number]> = []
-  const stride = 2
-  for (let y = 0; y < h; y += stride) {
-    for (let x = 0; x < w; x += stride) {
-      if (d[(y * w + x) * 4 + 3] > 0) {
-        if (x < minX) minX = x
-        if (x > maxX) maxX = x
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
-        n++
-        if (n % 37 === 0) sampled.push([x, y])
-      }
-    }
-  }
-  if (maxX < 0 || n === 0) return null
-
-  // 점은 반드시 "실제로 칠해진 픽셀" 위에서만 뽑는다.
-  // (중심점은 C자형 낙서처럼 오브젝트 밖에 떨어질 수 있어 쓰지 않는다)
-  const points: SamPoint[] = []
-  const want = Math.min(4, Math.max(1, sampled.length))
-  for (let i = 0; i < want && sampled.length > 0; i++) {
-    const [x, y] = sampled[Math.floor((i + 0.5) * (sampled.length / want))]
-    points.push({ x, y, label: 1 })
-  }
-  if (points.length === 0) {
-    // 칠한 영역이 아주 작아 샘플이 없으면 박스 중심을 쓰되 칠해졌는지 확인.
-    const cx = Math.round((minX + maxX) / 2)
-    const cy = Math.round((minY + maxY) / 2)
-    if (d[(cy * w + cx) * 4 + 3] > 0) points.push({ x: cx, y: cy, label: 1 })
-  }
-
-  return { box: { x1: minX, y1: minY, x2: maxX, y2: maxY }, points }
-}
-
-/** 칠한 캔버스(알파)를 0/1 MaskResult 로 바꾼다 — "칠한 그대로" 누끼용. */
-function maskFromPaint(mask: HTMLCanvasElement): MaskResult | null {
-  const w = mask.width
-  const h = mask.height
-  const ctx = mask.getContext('2d')
-  if (!ctx) return null
-  const d = ctx.getImageData(0, 0, w, h).data
-  const out = new Uint8Array(w * h)
-  let any = false
-  for (let i = 0; i < w * h; i++) {
-    if (d[i * 4 + 3] > 0) {
-      out[i] = 1
-      any = true
-    }
-  }
-  return any ? { data: out, width: w, height: h } : null
-}
-
 /**
- * 지정 누끼 — 남길 영역을 브러시로 "대략" 칠하면 AI(SAM)가 오브젝트 경계를
- * 정확히 인식해 누끼를 딴다. AI 가 불가한 환경에서도 "칠한 그대로 누끼"는
- * 모델 없이 항상 동작한다.
+ * 지정 누끼 — 남길 오브젝트를 브러시로 "대략" 칠하면, 칠한 영역을 크롭해
+ * 자동 모드와 동일한 ISNet 엔진으로 피사체 경계를 정확히 따낸다.
+ * "칠한 그대로 누끼"는 모델 없이 항상 동작하는 보장 경로.
  */
 export default function InteractivePanel({ source }: Props) {
   const [tool, setTool] = useState<Tool>('brush')
@@ -97,13 +28,9 @@ export default function InteractivePanel({ source }: Props) {
   const [hasPaint, setHasPaint] = useState(false)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [working, setWorking] = useState<null | 'ai' | 'manual'>(null)
+  const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const resultBlob = useRef<Blob | null>(null)
-
-  const [aiStatus, setAiStatus] = useState<AiStatus>('loading')
-  const [aiRatio, setAiRatio] = useState(0)
-  const [aiError, setAiError] = useState<string | null>(null)
-  const sessionRef = useRef<SamSession | null>(null)
 
   const stageRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
@@ -112,35 +39,6 @@ export default function InteractivePanel({ source }: Props) {
   const drawing = useRef(false)
   const lastPt = useRef<{ x: number; y: number } | null>(null)
   const cursor = useRef<{ x: number; y: number } | null>(null)
-
-  // ---- AI 세션(모델 + 이미지 임베딩)을 백그라운드에서 준비 ----
-  useEffect(() => {
-    let cancelled = false
-    setAiStatus('loading')
-    setAiRatio(0)
-    setAiError(null)
-    sessionRef.current = null
-
-    SamSession.create(source.blob, (r) => {
-      if (!cancelled) setAiRatio(r)
-    })
-      .then((s) => {
-        if (cancelled) return
-        sessionRef.current = s
-        setAiStatus('ready')
-      })
-      .catch((err) => {
-        console.error(err)
-        if (cancelled) return
-        const detail = err instanceof Error ? err.message : String(err ?? '')
-        setAiError(detail.slice(0, 160))
-        setAiStatus('error')
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [source])
 
   // ---- 오버레이(칠 미리보기 + 커서) ----
   const drawOverlay = useCallback(() => {
@@ -193,6 +91,7 @@ export default function InteractivePanel({ source }: Props) {
     })
     resultBlob.current = null
     setError(null)
+    setProgress(null)
     maskRef.current = null
     setHasPaint(false)
     cursor.current = null
@@ -316,9 +215,8 @@ export default function InteractivePanel({ source }: Props) {
   }, [drawOverlay])
 
   // ---- 누끼 생성 ----
-  const finish = useCallback(
-    async (mask: MaskResult, feather: number) => {
-      const blob = await compositeCutout(source.url, mask, feather)
+  const deliver = useCallback(
+    (blob: Blob) => {
       resultBlob.current = blob
       const url = URL.createObjectURL(blob)
       setResultUrl((prev) => {
@@ -330,18 +228,16 @@ export default function InteractivePanel({ source }: Props) {
     [source],
   )
 
-  /** AI 인식: 칠한 영역 → 프롬프트 → SAM → 오브젝트 경계 마스크. */
+  /** AI 인식: 칠한 박스 크롭 → ISNet 으로 피사체 추출 → 원위치 합성. */
   const aiCutout = useCallback(async () => {
     const mask = maskRef.current
-    const session = sessionRef.current
-    if (!mask || !session || !hasPaint) return
+    if (!mask || !hasPaint) return
     setWorking('ai')
     setError(null)
+    setProgress({ stage: '준비 중', ratio: 0 })
     try {
-      const prompts = promptsFromMask(mask)
-      if (!prompts) throw new Error('칠한 영역을 찾지 못했어요.')
-      const result = await session.segment(prompts.points, prompts.box)
-      await finish(result, 1.5)
+      const blob = await aiRegionCutout(source.url, mask, 'best', setProgress)
+      deliver(blob)
     } catch (err) {
       console.error(err)
       const detail = err instanceof Error ? err.message : String(err ?? '')
@@ -351,8 +247,9 @@ export default function InteractivePanel({ source }: Props) {
       )
     } finally {
       setWorking(null)
+      setProgress(null)
     }
-  }, [hasPaint, finish])
+  }, [hasPaint, source.url, deliver])
 
   /** 칠한 그대로: 모델 없이 칠한 영역만 남긴다. 항상 동작. */
   const manualCutout = useCallback(async () => {
@@ -363,7 +260,7 @@ export default function InteractivePanel({ source }: Props) {
     try {
       const m = maskFromPaint(mask)
       if (!m) throw new Error('칠한 영역이 없어요.')
-      await finish(m, 1)
+      deliver(await compositeCutout(source.url, m, 1))
     } catch (err) {
       console.error(err)
       const detail = err instanceof Error ? err.message : String(err ?? '')
@@ -371,16 +268,14 @@ export default function InteractivePanel({ source }: Props) {
     } finally {
       setWorking(null)
     }
-  }, [hasPaint, finish])
-
-  const aiReady = aiStatus === 'ready'
+  }, [hasPaint, source.url, deliver])
 
   return (
     <div className="panel">
       <p className="hint">
         남기고 싶은 오브젝트를 <b>대략</b> 칠하세요. <b>AI 인식 누끼</b>를 누르면
-        모델이 경계를 정확히 찾아 따냅니다. 정밀하게 칠했다면 <b>칠한 그대로
-        누끼</b>도 좋아요.
+        그 영역에서 피사체 경계를 정확히 찾아 따냅니다. 정밀하게 칠했다면{' '}
+        <b>칠한 그대로 누끼</b>도 좋아요.
       </p>
 
       <div className="seg-toolbar">
@@ -463,25 +358,19 @@ export default function InteractivePanel({ source }: Props) {
         </figure>
       </div>
 
-      {aiStatus === 'loading' && (
+      {working === 'ai' && progress && (
         <div className="progress" aria-live="polite">
           <div className="progress__row">
-            <span>AI 모델 준비 중… (이번 한 번만 내려받아요)</span>
-            <span>{aiRatio > 0 ? `${Math.round(aiRatio * 100)}%` : ''}</span>
+            <span>{progress.stage}</span>
+            <span>{Math.round(progress.ratio * 100)}%</span>
           </div>
           <div className="progress__track">
             <div
               className="progress__bar"
-              style={{ width: `${Math.max(4, aiRatio * 100)}%` }}
+              style={{ width: `${Math.max(4, progress.ratio * 100)}%` }}
             />
           </div>
         </div>
-      )}
-      {aiStatus === 'error' && (
-        <p className="hint">
-          ⚠ AI 모델을 준비하지 못했어요{aiError ? ` (${aiError})` : ''}. “칠한
-          그대로 누끼”는 계속 사용할 수 있어요.
-        </p>
       )}
 
       {error && <p className="error-note">{error}</p>}
@@ -491,13 +380,9 @@ export default function InteractivePanel({ source }: Props) {
           <button
             className="btn btn--primary"
             onClick={aiCutout}
-            disabled={!hasPaint || !aiReady || working !== null}
+            disabled={!hasPaint || working !== null}
           >
-            {working === 'ai'
-              ? 'AI 인식 중…'
-              : aiStatus === 'loading'
-                ? 'AI 준비 중…'
-                : '✨ AI 인식 누끼 (추천)'}
+            {working === 'ai' ? 'AI 인식 중…' : '✨ AI 인식 누끼 (추천)'}
           </button>
           <button
             className="btn btn--ghost"
