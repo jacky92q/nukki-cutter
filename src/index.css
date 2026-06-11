@@ -426,6 +426,110 @@ body {
   color: var(--muted);
 }
 
+/* ---------- Result modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 25, 58, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+.modal {
+  background: var(--white);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(17, 25, 58, 0.3);
+  width: 100%;
+  max-width: 560px;
+  max-height: 92vh;
+  overflow: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--navy-deep);
+}
+
+.modal__preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border: 1px solid var(--navy-line);
+  border-radius: 12px;
+  min-height: 140px;
+  background-color: #fbfcfe;
+  background-image: linear-gradient(45deg, #e7ebf5 25%, transparent 25%),
+    linear-gradient(-45deg, #e7ebf5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e7ebf5 75%),
+    linear-gradient(-45deg, transparent 75%, #e7ebf5 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
+.modal__preview canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+.modal__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.modal__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--navy-deep);
+  cursor: pointer;
+}
+
+.modal__check input {
+  accent-color: var(--navy);
+  width: 16px;
+  height: 16px;
+}
+
+.modal__scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--navy-deep);
+  min-width: 200px;
+}
+
+.modal__scale input {
+  accent-color: var(--navy);
+  flex: 1;
+}
+
+.modal__dims {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.modal__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .error-note {
   margin: 0;
   padding: 12px 16px;

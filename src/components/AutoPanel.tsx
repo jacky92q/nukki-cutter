@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cutout, type ProgressInfo, type Quality } from '../lib/removeBg'
-import { outputName, triggerDownload, type Loaded } from '../lib/files'
+import { outputName, type Loaded } from '../lib/files'
+import ResultModal from './ResultModal'
 
 type Status = 'ready' | 'processing' | 'done' | 'error'
 
@@ -15,6 +16,7 @@ export default function AutoPanel({ source }: Props) {
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [modalBlob, setModalBlob] = useState<Blob | null>(null)
   const resultBlob = useRef<Blob | null>(null)
 
   // 이미지가 바뀌면 결과를 초기화한다.
@@ -26,6 +28,7 @@ export default function AutoPanel({ source }: Props) {
     })
     setProgress(null)
     setError(null)
+    setModalBlob(null)
     resultBlob.current = null
   }, [source])
 
@@ -51,8 +54,8 @@ export default function AutoPanel({ source }: Props) {
         return url
       })
       setStatus('done')
-      // 결과가 나오면 자동으로 다운로드.
-      triggerDownload(blob, outputName(source.file.name))
+      // 결과 확인 팝업을 열어 다운로드 여부를 사용자가 결정하게 한다.
+      setModalBlob(blob)
     } catch (err) {
       console.error(err)
       const detail = err instanceof Error ? err.message : String(err ?? '')
@@ -137,12 +140,9 @@ export default function AutoPanel({ source }: Props) {
           {status === 'done' && resultBlob.current ? (
             <button
               className="btn btn--primary"
-              onClick={() =>
-                resultBlob.current &&
-                triggerDownload(resultBlob.current, outputName(source.file.name))
-              }
+              onClick={() => resultBlob.current && setModalBlob(resultBlob.current)}
             >
-              다시 다운로드
+              다운로드 / 편집
             </button>
           ) : (
             <button className="btn btn--primary" onClick={start} disabled={busy}>
@@ -154,10 +154,18 @@ export default function AutoPanel({ source }: Props) {
 
       {status === 'done' && (
         <p className="done-note">
-          ✓ 누끼 완료! 투명 배경 PNG 가 자동으로 다운로드되었어요.
+          ✓ 누끼 완료! 결과를 확인하고 다운로드하세요.
         </p>
       )}
       {status === 'error' && error && <p className="error-note">{error}</p>}
+
+      {modalBlob && (
+        <ResultModal
+          blob={modalBlob}
+          filename={outputName(source.file.name)}
+          onClose={() => setModalBlob(null)}
+        />
+      )}
     </div>
   )
 }

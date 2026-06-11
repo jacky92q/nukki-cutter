@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { outputName, triggerDownload, type Loaded } from '../lib/files'
+import { outputName, type Loaded } from '../lib/files'
 import {
   aiRegionCutout,
   compositeCutout,
   maskFromPaint,
 } from '../lib/maskCutout'
 import type { ProgressInfo } from '../lib/removeBg'
+import ResultModal from './ResultModal'
 
 type Tool = 'brush' | 'erase'
 
@@ -30,6 +31,7 @@ export default function InteractivePanel({ source }: Props) {
   const [working, setWorking] = useState<null | 'ai' | 'manual'>(null)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [modalBlob, setModalBlob] = useState<Blob | null>(null)
   const resultBlob = useRef<Blob | null>(null)
 
   const stageRef = useRef<HTMLDivElement>(null)
@@ -92,6 +94,7 @@ export default function InteractivePanel({ source }: Props) {
     resultBlob.current = null
     setError(null)
     setProgress(null)
+    setModalBlob(null)
     maskRef.current = null
     setHasPaint(false)
     cursor.current = null
@@ -215,18 +218,16 @@ export default function InteractivePanel({ source }: Props) {
   }, [drawOverlay])
 
   // ---- 누끼 생성 ----
-  const deliver = useCallback(
-    (blob: Blob) => {
-      resultBlob.current = blob
-      const url = URL.createObjectURL(blob)
-      setResultUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev)
-        return url
-      })
-      triggerDownload(blob, outputName(source.file.name))
-    },
-    [source],
-  )
+  const deliver = useCallback((blob: Blob) => {
+    resultBlob.current = blob
+    const url = URL.createObjectURL(blob)
+    setResultUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      return url
+    })
+    // 결과 확인 팝업을 열어 다운로드 여부를 사용자가 결정하게 한다.
+    setModalBlob(blob)
+  }, [])
 
   /** AI 인식: 칠한 박스 크롭 → ISNet 으로 피사체 추출 → 원위치 합성. */
   const aiCutout = useCallback(async () => {
@@ -394,19 +395,24 @@ export default function InteractivePanel({ source }: Props) {
           {resultUrl && resultBlob.current && (
             <button
               className="btn btn--ghost"
-              onClick={() =>
-                resultBlob.current &&
-                triggerDownload(resultBlob.current, outputName(source.file.name))
-              }
+              onClick={() => resultBlob.current && setModalBlob(resultBlob.current)}
             >
-              다시 다운로드
+              다운로드 / 편집
             </button>
           )}
         </div>
       </div>
 
       {resultUrl && (
-        <p className="done-note">✓ 누끼 완료! 투명 배경 PNG 가 다운로드되었어요.</p>
+        <p className="done-note">✓ 누끼 완료! 결과를 확인하고 다운로드하세요.</p>
+      )}
+
+      {modalBlob && (
+        <ResultModal
+          blob={modalBlob}
+          filename={outputName(source.file.name)}
+          onClose={() => setModalBlob(null)}
+        />
       )}
     </div>
   )
