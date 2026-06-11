@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { ACCEPTED, type Loaded } from './lib/files'
+import { ACCEPTED, normalizeImage, type Loaded } from './lib/files'
 import ErrorBoundary from './components/ErrorBoundary'
 
 // 모드별로 무거운 모델 코드를 분리해, 해당 모드에 들어갈 때만 불러온다.
@@ -13,6 +13,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>('auto')
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [loading, setLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -23,16 +24,27 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const acceptFile = useCallback((file: File) => {
+  const acceptFile = useCallback(async (file: File) => {
     if (!ACCEPTED.includes(file.type)) {
       setError('PNG · JPG · WebP 이미지 파일만 사용할 수 있어요.')
       return
     }
     setError(null)
-    setSource((prev) => {
-      if (prev) URL.revokeObjectURL(prev.url)
-      return { file, url: URL.createObjectURL(file) }
-    })
+    setLoading(true)
+    try {
+      // 브라우저에서 직접 디코딩 + EXIF 방향 보정 + 과대 해상도 축소.
+      // (고해상도 모바일 원본을 그대로 엔진에 넘기면 디코딩 오류가 날 수 있다)
+      const { blob, width, height } = await normalizeImage(file)
+      setSource((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url)
+        return { file, blob, url: URL.createObjectURL(blob), width, height }
+      })
+    } catch (err) {
+      console.error(err)
+      setError('이미지를 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   const onPick = useCallback(
@@ -98,7 +110,9 @@ export default function App() {
             <div className="dropzone__icon" aria-hidden>
               ⬆
             </div>
-            <p className="dropzone__title">이미지를 여기에 끌어다 놓으세요</p>
+            <p className="dropzone__title">
+              {loading ? '이미지 불러오는 중…' : '이미지를 여기에 끌어다 놓으세요'}
+            </p>
             <p className="dropzone__sub">
               또는 클릭해서 사진첩·파일에서 선택 · PNG · JPG · WebP
             </p>
@@ -124,7 +138,7 @@ export default function App() {
                   onClick={() => setMode('interactive')}
                 >
                   지정
-                  <small>브러시로 직접 칠하기</small>
+                  <small>대략 칠하면 AI가 인식</small>
                 </button>
               </div>
               <button className="btn btn--ghost" onClick={reset}>

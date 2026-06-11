@@ -11,8 +11,7 @@ interface Props {
 /** 자동 누끼(ISNet) — 사진 전체에서 주요 피사체를 자동으로 잡아 배경을 제거한다. */
 export default function AutoPanel({ source }: Props) {
   const [status, setStatus] = useState<Status>('ready')
-  // 기본값은 가볍고 빠른 모델 — 첫 실행에서 다운로드/추론이 더 빨라 성공 확률이 높다.
-  const [quality, setQuality] = useState<Quality>('fast')
+  const [quality, setQuality] = useState<Quality>('best')
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +42,8 @@ export default function AutoPanel({ source }: Props) {
     setError(null)
     setProgress({ stage: '준비 중', ratio: 0 })
     try {
-      const blob = await cutout(source.file, quality, setProgress)
+      // 정규화된 Blob 을 넘긴다(원본 File 그대로 넘기면 모바일 고해상도에서 디코딩 실패 가능).
+      const blob = await cutout(source.blob, quality, setProgress)
       resultBlob.current = blob
       const url = URL.createObjectURL(blob)
       setResultUrl((prev) => {
@@ -57,8 +57,7 @@ export default function AutoPanel({ source }: Props) {
       console.error(err)
       const detail = err instanceof Error ? err.message : String(err ?? '')
       setError(
-        '배경 제거에 실패했어요. 자동 모드는 처음 한 번 모델(수십 MB)을 내려받아요. ' +
-          '네트워크가 막혀 있다면 “지정” 모드(브러시)를 쓰면 모델 없이 누끼할 수 있어요.' +
+        '배경 제거에 실패했어요. 잠시 후 다시 시도하거나 “지정” 모드를 사용해 보세요.' +
           (detail ? `\n(상세: ${detail.slice(0, 200)})` : ''),
       )
       setStatus('error')

@@ -230,6 +230,28 @@ body {
   cursor: none;
 }
 
+.swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+.swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+.swatch--on {
+  border-color: var(--navy-deep);
+  transform: scale(1.12);
+}
+
 .brush-size {
   display: inline-flex;
   align-items: center;
