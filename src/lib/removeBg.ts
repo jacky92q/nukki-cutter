@@ -40,12 +40,24 @@ function describeStage(key: string): string {
  * @param quality 품질 옵션
  * @param onProgress 진행률 콜백
  */
+/**
+ * 프로덕션 빌드에는 모델 파일이 같은 도메인(<base>/imgly/)에 셀프호스팅된다
+ * (scripts/fetch-models.mjs). 외부 CDN 이 차단된 회사망에서도 동작하게 하기 위함.
+ */
+function selfHostedPublicPath(): string | undefined {
+  if (!import.meta.env.PROD) return undefined
+  return new URL(
+    `${import.meta.env.BASE_URL}imgly/`,
+    window.location.origin,
+  ).toString()
+}
+
 export async function cutout(
   input: Blob,
   quality: Quality,
   onProgress?: (info: ProgressInfo) => void,
 ): Promise<Blob> {
-  const config: Config = {
+  const baseConfig: Config = {
     model: MODEL_BY_QUALITY[quality],
     // device 는 지정하지 않는다. 기본값(CPU/WASM)이 어떤 브라우저에서도 동작한다.
     // ('gpu'(WebGPU)를 강제하면 WebGPU 미지원 환경에서 즉시 실패한다.)
@@ -61,5 +73,15 @@ export async function cutout(
 
   // 무거운 누끼 엔진은 실제로 작업을 시작할 때만 동적으로 불러온다(초기 로딩 경량화).
   const { removeBackground } = await import('@imgly/background-removal')
-  return removeBackground(input, config)
+
+  // 1차: 같은 도메인 셀프호스트 모델 → 실패 시 2차: 기본 CDN 으로 폴백.
+  const publicPath = selfHostedPublicPath()
+  if (publicPath) {
+    try {
+      return await removeBackground(input, { ...baseConfig, publicPath })
+    } catch (err) {
+      console.warn('[cutout] 셀프호스트 모델 실패, CDN 으로 폴백:', err)
+    }
+  }
+  return removeBackground(input, baseConfig)
 }

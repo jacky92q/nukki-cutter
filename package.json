@@ -6,7 +6,7 @@
   "description": "브라우저에서 100% 로컬로 동작하는 이미지 누끼(배경 제거) 도구",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/fetch-models.mjs && tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

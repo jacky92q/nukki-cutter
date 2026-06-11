@@ -15,6 +15,69 @@ interface Rect {
 }
 
 /**
+ * 결과를 캔버스에 렌더링한다. edge(0~6)가 켜져 있으면 알파를 블러→수축해
+ * 그림자·테두리(헤일로) 같은 반투명 찌꺼기를 제거하고 경계를 매끈하게 한다.
+ */
+function renderResult(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  rect: Rect,
+  outW: number,
+  outH: number,
+  edge: number,
+): void {
+  canvas.width = Math.max(1, outW)
+  canvas.height = Math.max(1, outH)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.clearRect(0, 0, outW, outH)
+  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, outW, outH)
+  if (edge <= 0) return
+
+  const id = ctx.getImageData(0, 0, outW, outH)
+  const n = outW * outH
+
+  // 알파만 추출한 캔버스를 블러 처리
+  const m = document.createElement('canvas')
+  m.width = outW
+  m.height = outH
+  const mctx = m.getContext('2d')!
+  const mi = mctx.createImageData(outW, outH)
+  for (let i = 0; i < n; i++) {
+    mi.data[i * 4] = 255
+    mi.data[i * 4 + 1] = 255
+    mi.data[i * 4 + 2] = 255
+    mi.data[i * 4 + 3] = id.data[i * 4 + 3]
+  }
+  mctx.putImageData(mi, 0, 0)
+
+  const b = document.createElement('canvas')
+  b.width = outW
+  b.height = outH
+  const bctx = b.getContext('2d')!
+  bctx.filter = `blur(${(1 + edge * 0.4).toFixed(1)}px)`
+  bctx.drawImage(m, 0, 0)
+  const bd = bctx.getImageData(0, 0, outW, outH).data
+
+  // 약한 알파(그림자·헤일로)는 잘라내고 나머지는 재정규화. 원래 알파보다
+  // 커지지 않게 막아 오브젝트가 바깥으로 번지는 것을 방지한다.
+  const shift = edge * 18
+  const gain = 255 / (255 - shift)
+  for (let i = 0; i < n; i++) {
+    const orig = id.data[i * 4 + 3]
+    if (orig < 8) {
+      id.data[i * 4 + 3] = 0
+      continue
+    }
+    const a = Math.max(0, Math.min(255, (bd[i * 4 + 3] - shift) * gain))
+    id.data[i * 4 + 3] = Math.min(orig, a)
+  }
+  ctx.putImageData(id, 0, 0)
+}
+
+/**
  * 누끼 결과 확인 팝업.
  * - 결과를 미리 보고 다운로드 여부를 결정한다.
  * - "여백 잘라내기"로 투명 여백을 제거해 오브젝트만 남길 수 있다.
@@ -28,6 +91,7 @@ export default function ResultModal({ blob, filename, onClose }: Props) {
   const [trimBox, setTrimBox] = useState<Rect | null>(null)
   const [trim, setTrim] = useState(false)
   const [scale, setScale] = useState(1)
+  const [edge, setEdge] = useState(0)
   const [saving, setSaving] = useState(false)
   const previewRef = useRef<HTMLCanvasElement>(null)
 
@@ -98,23 +162,23 @@ export default function ResultModal({ blob, filename, onClose }: Props) {
       : { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight }
     : null
 
-  // 미리보기 그리기 (현재 선택 영역)
+  // 미리보기 그리기 (현재 선택 영역 + 가장자리 다듬기 반영)
   useEffect(() => {
     const canvas = previewRef.current
     if (!canvas || !img || !rect) return
     const maxW = 520
     const maxH = 320
     const s = Math.min(maxW / rect.w, maxH / rect.h, 1)
-    canvas.width = Math.max(1, Math.round(rect.w * s))
-    canvas.height = Math.max(1, Math.round(rect.h * s))
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, canvas.width, canvas.height)
+    renderResult(
+      canvas,
+      img,
+      rect,
+      Math.round(rect.w * s),
+      Math.round(rect.h * s),
+      edge,
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, trim, trimBox])
+  }, [img, trim, trimBox, edge])
 
   const outW = rect ? Math.round(rect.w * scale) : 0
   const outH = rect ? Math.round(rect.h * scale) : 0
@@ -124,13 +188,14 @@ export default function ResultModal({ blob, filename, onClose }: Props) {
     setSaving(true)
     try {
       const c = document.createElement('canvas')
-      c.width = Math.max(1, Math.round(rect.w * scale))
-      c.height = Math.max(1, Math.round(rect.h * scale))
-      const ctx = c.getContext('2d')
-      if (!ctx) throw new Error('canvas 컨텍스트를 만들 수 없어요.')
-      ctx.imageSmoothingEnabled = true
-      ctx.imageSmoothingQuality = 'high'
-      ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height)
+      renderResult(
+        c,
+        img,
+        rect,
+        Math.round(rect.w * scale),
+        Math.round(rect.h * scale),
+        edge,
+      )
       const out = await new Promise<Blob>((resolve, reject) =>
         c.toBlob(
           (b) => (b ? resolve(b) : reject(new Error('PNG 생성 실패'))),
@@ -142,7 +207,7 @@ export default function ResultModal({ blob, filename, onClose }: Props) {
       setSaving(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, trim, trimBox, scale, filename])
+  }, [img, trim, trimBox, scale, edge, filename])
 
   return (
     <div
@@ -171,6 +236,23 @@ export default function ResultModal({ blob, filename, onClose }: Props) {
             />
             여백 잘라내기 (오브젝트만)
           </label>
+        </div>
+
+        <div className="modal__row">
+          <label className="modal__scale">
+            가장자리 다듬기
+            <input
+              type="range"
+              min={0}
+              max={6}
+              step={1}
+              value={edge}
+              onChange={(e) => setEdge(Number(e.target.value))}
+            />
+          </label>
+          <span className="modal__dims">
+            {edge === 0 ? '끄기' : `레벨 ${edge} · 그림자·테두리 제거`}
+          </span>
         </div>
 
         <div className="modal__row">

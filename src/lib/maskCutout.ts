@@ -152,10 +152,22 @@ async function cutAndAnalyze(
 ): Promise<{ canvas: HTMLCanvasElement; touch: EdgeTouch; cw: number; ch: number }> {
   const cw = x2 - x1
   const ch = y2 - y1
+
+  // 작은 오브젝트는 크롭을 1024px 까지 고품질 확대해서 추론한다.
+  // 모델 입력 해상도를 꽉 채워 쓰게 되어 경계 매트가 훨씬 정밀해진다.
+  // (결과는 다시 원본 크기로 줄여 합성 — 픽셀 정보는 원본 그대로)
+  const TARGET = 1024
+  const f = Math.max(cw, ch) < TARGET ? TARGET / Math.max(cw, ch) : 1
+  const iw = Math.round(cw * f)
+  const ih = Math.round(ch * f)
+
   const cc = document.createElement('canvas')
-  cc.width = cw
-  cc.height = ch
-  cc.getContext('2d')!.drawImage(img, x1, y1, cw, ch, 0, 0, cw, ch)
+  cc.width = iw
+  cc.height = ih
+  const cctx = cc.getContext('2d')!
+  cctx.imageSmoothingEnabled = true
+  cctx.imageSmoothingQuality = 'high'
+  cctx.drawImage(img, x1, y1, cw, ch, 0, 0, iw, ih)
   const cropBlob = await toPng(cc)
 
   const cutBlob = await cutout(cropBlob, quality, onProgress)
@@ -166,7 +178,9 @@ async function cutAndAnalyze(
     ac.width = cw
     ac.height = ch
     const actx = ac.getContext('2d')!
-    actx.drawImage(cutImg, 0, 0)
+    actx.imageSmoothingEnabled = true
+    actx.imageSmoothingQuality = 'high'
+    actx.drawImage(cutImg, 0, 0, iw, ih, 0, 0, cw, ch)
     const d = actx.getImageData(0, 0, cw, ch).data
     const touch: EdgeTouch = { left: 0, right: 0, top: 0, bottom: 0 }
     for (let y = 0; y < ch; y++) {
