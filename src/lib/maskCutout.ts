@@ -133,9 +133,62 @@ export async function compositeCutout(
   return toPng(oc)
 }
 
+interface EdgeTouch {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+/** 박스를 크롭→ISNet 누끼 후, 결과 알파가 크롭 가장자리에 닿았는지도 분석한다. */
+async function cutAndAnalyze(
+  img: HTMLImageElement,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  quality: Quality,
+  onProgress?: (p: ProgressInfo) => void,
+): Promise<{ canvas: HTMLCanvasElement; touch: EdgeTouch; cw: number; ch: number }> {
+  const cw = x2 - x1
+  const ch = y2 - y1
+  const cc = document.createElement('canvas')
+  cc.width = cw
+  cc.height = ch
+  cc.getContext('2d')!.drawImage(img, x1, y1, cw, ch, 0, 0, cw, ch)
+  const cropBlob = await toPng(cc)
+
+  const cutBlob = await cutout(cropBlob, quality, onProgress)
+  const u = URL.createObjectURL(cutBlob)
+  try {
+    const cutImg = await loadImage(u)
+    const ac = document.createElement('canvas')
+    ac.width = cw
+    ac.height = ch
+    const actx = ac.getContext('2d')!
+    actx.drawImage(cutImg, 0, 0)
+    const d = actx.getImageData(0, 0, cw, ch).data
+    const touch: EdgeTouch = { left: 0, right: 0, top: 0, bottom: 0 }
+    for (let y = 0; y < ch; y++) {
+      if (d[(y * cw + 1) * 4 + 3] > 16) touch.left++
+      if (d[(y * cw + cw - 2) * 4 + 3] > 16) touch.right++
+    }
+    for (let x = 0; x < cw; x++) {
+      if (d[(cw + x) * 4 + 3] > 16) touch.top++
+      if (d[((ch - 2) * cw + x) * 4 + 3] > 16) touch.bottom++
+    }
+    return { canvas: ac, touch, cw, ch }
+  } finally {
+    URL.revokeObjectURL(u)
+  }
+}
+
 /**
  * AI 인식 누끼: 칠한 영역의 박스(+여유)를 크롭해 ISNet 으로 피사체를 추출하고,
- * 결과를 원본 좌표에 그대로 합성한 전체 크기 투명 PNG 를 돌려준다.
+ * 결과를 원본 좌표에 합성한 전체 크기 투명 PNG 를 돌려준다.
+ *
+ * 누끼 결과가 크롭 가장자리에 닿아 있으면(=오브젝트가 잘린 신호) 닿은 방향으로
+ * 박스를 자동 확장해 최대 2회 재시도한다 — 대충 칠해도 오브젝트가 잘리지 않게.
  */
 export async function aiRegionCutout(
   sourceUrl: string,
@@ -150,37 +203,53 @@ export async function aiRegionCutout(
   const W = img.naturalWidth
   const H = img.naturalHeight
 
-  // 칠한 박스에 12%(최소 16px) 여유를 둬 오브젝트 가장자리가 잘리지 않게 한다.
-  const mx = Math.max(16, (box.x2 - box.x1) * 0.12)
-  const my = Math.max(16, (box.y2 - box.y1) * 0.12)
-  const x1 = Math.max(0, Math.floor(box.x1 - mx))
-  const y1 = Math.max(0, Math.floor(box.y1 - my))
-  const x2 = Math.min(W, Math.ceil(box.x2 + mx))
-  const y2 = Math.min(H, Math.ceil(box.y2 + my))
-  const cw = x2 - x1
-  const ch = y2 - y1
-  if (cw < 8 || ch < 8) throw new Error('칠한 영역이 너무 작아요.')
+  // 칠한 박스에 18%(최소 24px) 여유를 둔 시작 박스.
+  const mx = Math.max(24, (box.x2 - box.x1) * 0.18)
+  const my = Math.max(24, (box.y2 - box.y1) * 0.18)
+  let x1 = Math.max(0, Math.floor(box.x1 - mx))
+  let y1 = Math.max(0, Math.floor(box.y1 - my))
+  let x2 = Math.min(W, Math.ceil(box.x2 + mx))
+  let y2 = Math.min(H, Math.ceil(box.y2 + my))
+  if (x2 - x1 < 8 || y2 - y1 < 8) throw new Error('칠한 영역이 너무 작아요.')
 
-  // 1) 크롭
-  const cc = document.createElement('canvas')
-  cc.width = cw
-  cc.height = ch
-  cc.getContext('2d')!.drawImage(img, x1, y1, cw, ch, 0, 0, cw, ch)
-  const cropBlob = await toPng(cc)
+  for (let attempt = 0; ; attempt++) {
+    const used = { x1, y1, x2, y2 }
+    const r = await cutAndAnalyze(img, x1, y1, x2, y2, quality, onProgress)
 
-  // 2) 크롭 조각에서 피사체 추출(자동 모드와 동일 엔진)
-  const cutBlob = await cutout(cropBlob, quality, onProgress)
+    // 가장자리에 닿은 변이 있으면 그 방향으로 30% 확장해 재시도.
+    const thX = Math.max(4, r.cw * 0.02)
+    const thY = Math.max(4, r.ch * 0.02)
+    const growX = Math.ceil((x2 - x1) * 0.3)
+    const growY = Math.ceil((y2 - y1) * 0.3)
+    let grew = false
+    if (attempt < 2) {
+      if (r.touch.left > thY && x1 > 0) {
+        x1 = Math.max(0, x1 - growX)
+        grew = true
+      }
+      if (r.touch.right > thY && x2 < W) {
+        x2 = Math.min(W, x2 + growX)
+        grew = true
+      }
+      if (r.touch.top > thX && y1 > 0) {
+        y1 = Math.max(0, y1 - growY)
+        grew = true
+      }
+      if (r.touch.bottom > thX && y2 < H) {
+        y2 = Math.min(H, y2 + growY)
+        grew = true
+      }
+    }
+    if (grew) {
+      onProgress?.({ stage: '잘린 부분 감지 — 영역 넓혀 다시 인식 중', ratio: 0 })
+      continue
+    }
 
-  // 3) 전체 크기 캔버스의 원래 위치에 합성
-  const u = URL.createObjectURL(cutBlob)
-  try {
-    const cutImg = await loadImage(u)
+    // 전체 크기 캔버스의 원래 위치에 합성.
     const oc = document.createElement('canvas')
     oc.width = W
     oc.height = H
-    oc.getContext('2d')!.drawImage(cutImg, x1, y1)
-    return await toPng(oc)
-  } finally {
-    URL.revokeObjectURL(u)
+    oc.getContext('2d')!.drawImage(r.canvas, used.x1, used.y1)
+    return toPng(oc)
   }
 }
