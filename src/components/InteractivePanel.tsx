@@ -32,8 +32,6 @@ function promptsFromMask(
   let minY = h
   let maxX = -1
   let maxY = -1
-  let sumX = 0
-  let sumY = 0
   let n = 0
   const sampled: Array<[number, number]> = []
   const stride = 2
@@ -44,8 +42,6 @@ function promptsFromMask(
         if (x > maxX) maxX = x
         if (y < minY) minY = y
         if (y > maxY) maxY = y
-        sumX += x
-        sumY += y
         n++
         if (n % 37 === 0) sampled.push([x, y])
       }
@@ -53,12 +49,19 @@ function promptsFromMask(
   }
   if (maxX < 0 || n === 0) return null
 
-  const points: SamPoint[] = [{ x: sumX / n, y: sumY / n, label: 1 }]
-  // 칠한 영역에서 점을 고르게 몇 개 더 뽑아 인식 안정성을 높인다.
-  const want = Math.min(3, sampled.length)
-  for (let i = 0; i < want; i++) {
+  // 점은 반드시 "실제로 칠해진 픽셀" 위에서만 뽑는다.
+  // (중심점은 C자형 낙서처럼 오브젝트 밖에 떨어질 수 있어 쓰지 않는다)
+  const points: SamPoint[] = []
+  const want = Math.min(4, Math.max(1, sampled.length))
+  for (let i = 0; i < want && sampled.length > 0; i++) {
     const [x, y] = sampled[Math.floor((i + 0.5) * (sampled.length / want))]
     points.push({ x, y, label: 1 })
+  }
+  if (points.length === 0) {
+    // 칠한 영역이 아주 작아 샘플이 없으면 박스 중심을 쓰되 칠해졌는지 확인.
+    const cx = Math.round((minX + maxX) / 2)
+    const cy = Math.round((minY + maxY) / 2)
+    if (d[(cy * w + cx) * 4 + 3] > 0) points.push({ x: cx, y: cy, label: 1 })
   }
 
   return { box: { x1: minX, y1: minY, x2: maxX, y2: maxY }, points }

@@ -66,8 +66,9 @@ async function resolveBackends(): Promise<LoadOption[]> {
   } catch {
     /* WebGPU 확인 실패 시 무시하고 WASM 으로 진행 */
   }
-  attempts.push({ device: 'wasm', dtype: 'q8' }) // 가볍고 호환성 높음
-  attempts.push({}) // 라이브러리 기본값(fp32) — 항상 존재하는 가중치
+  // q8(8비트 양자화)은 마스크 디코더가 노이즈를 내는 품질 문제가 있어 쓰지 않는다.
+  // 기본값(fp32/WASM)은 약간 느리지만 정확도가 온전하고 어디서나 동작한다.
+  attempts.push({})
   return attempts
 }
 
@@ -199,6 +200,26 @@ export class SamSession {
     const out = new Uint8Array(h * w)
     const offset = best * h * w
     for (let i = 0; i < h * w; i++) out[i] = all[offset + i]
+
+    // 사용자가 칠한 박스(+여유 8%) 밖은 잘라낸다 — 모델이 엉뚱한 곳에
+    // 노이즈 마스크를 흩뿌려도 다른 오브젝트로 번지지 않게 하는 안전망.
+    if (box) {
+      const mx = (box.x2 - box.x1) * 0.08 + 4
+      const my = (box.y2 - box.y1) * 0.08 + 4
+      const cx1 = Math.max(0, Math.floor(box.x1 - mx))
+      const cy1 = Math.max(0, Math.floor(box.y1 - my))
+      const cx2 = Math.min(w - 1, Math.ceil(box.x2 + mx))
+      const cy2 = Math.min(h - 1, Math.ceil(box.y2 + my))
+      for (let y = 0; y < h; y++) {
+        if (y < cy1 || y > cy2) {
+          out.fill(0, y * w, y * w + w)
+          continue
+        }
+        for (let x = 0; x < w; x++) {
+          if (x < cx1 || x > cx2) out[y * w + x] = 0
+        }
+      }
+    }
 
     return { data: out, width: w, height: h }
   }
