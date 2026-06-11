@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { ACCEPTED, type Loaded } from './lib/files'
+import ErrorBoundary from './components/ErrorBoundary'
 
 // 모드별로 무거운 모델 코드를 분리해, 해당 모드에 들어갈 때만 불러온다.
 const AutoPanel = lazy(() => import('./components/AutoPanel'))
@@ -131,20 +132,22 @@ export default function App() {
               </button>
             </div>
 
-            <Suspense
-              fallback={
-                <div className="panel-loading">
-                  <div className="spinner" />
-                  <span>불러오는 중…</span>
-                </div>
-              }
-            >
-              {mode === 'auto' ? (
-                <AutoPanel source={source} />
-              ) : (
-                <InteractivePanel source={source} />
-              )}
-            </Suspense>
+            <ErrorBoundary key={mode}>
+              <Suspense
+                fallback={
+                  <div className="panel-loading">
+                    <div className="spinner" />
+                    <span>불러오는 중…</span>
+                  </div>
+                }
+              >
+                {mode === 'auto' ? (
+                  <AutoPanel source={source} />
+                ) : (
+                  <InteractivePanel source={source} />
+                )}
+              </Suspense>
+            </ErrorBoundary>
           </>
         )}
 
