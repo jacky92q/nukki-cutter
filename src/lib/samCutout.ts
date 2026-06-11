@@ -42,36 +42,61 @@ export interface MaskResult {
 }
 
 type ModelBundle = { model: any; processor: any }
+type LoadOption = { device?: 'webgpu' | 'wasm'; dtype?: 'fp16' | 'q8' }
 
 let bundlePromise: Promise<ModelBundle> | null = null
 
-function pickBackend(): { device: 'webgpu' | 'wasm'; dtype: 'fp16' | 'q8' } {
-  const hasGpu =
-    typeof navigator !== 'undefined' && 'gpu' in navigator && !!navigator.gpu
-  return hasGpu
-    ? { device: 'webgpu', dtype: 'fp16' }
-    : { device: 'wasm', dtype: 'q8' }
+/**
+ * 시도할 백엔드 구성을 우선순위대로 만든다.
+ * navigator.gpu 가 "존재"하기만 해서는 안 되고, 실제 어댑터를 받을 수 있어야
+ * WebGPU 를 시도한다(모바일 크롬은 gpu 객체만 있고 어댑터가 없는 경우가 흔함).
+ * 어떤 구성이 실패하더라도 다음 구성으로 자동 폴백한다.
+ */
+async function resolveBackends(): Promise<LoadOption[]> {
+  const attempts: LoadOption[] = []
+  try {
+    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } })
+      .gpu
+    if (gpu) {
+      const adapter = await gpu.requestAdapter()
+      if (adapter) attempts.push({ device: 'webgpu', dtype: 'fp16' })
+    }
+  } catch {
+    /* WebGPU 확인 실패 시 무시하고 WASM 으로 진행 */
+  }
+  // WASM 양자화(가볍고 호환성 높음) → 라이브러리 기본값(확실히 존재하는 가중치)
+  attempts.push({ device: 'wasm', dtype: 'q8' })
+  attempts.push({})
+  return attempts
 }
 
-/** 모델/프로세서를 한 번만 로드해 캐싱한다. */
+/** 모델/프로세서를 한 번만 로드해 캐싱한다. 구성별로 순차 폴백한다. */
 export function loadSam(onProgress?: (ratio: number) => void): Promise<ModelBundle> {
   if (!bundlePromise) {
-    const { device, dtype } = pickBackend()
     bundlePromise = (async () => {
       const progress_callback = (data: { status?: string; progress?: number }) => {
         if (data.status === 'progress' && onProgress) {
           onProgress((data.progress ?? 0) / 100)
         }
       }
-      const model = await SamModel.from_pretrained(MODEL_ID, {
-        device,
-        dtype,
-        progress_callback,
-      } as any)
-      const processor = await AutoProcessor.from_pretrained(MODEL_ID, {
-        progress_callback,
-      } as any)
-      return { model, processor }
+      const attempts = await resolveBackends()
+      let lastError: unknown
+      for (const opts of attempts) {
+        try {
+          const model = await SamModel.from_pretrained(MODEL_ID, {
+            ...opts,
+            progress_callback,
+          } as any)
+          const processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+            progress_callback,
+          } as any)
+          return { model, processor }
+        } catch (err) {
+          console.warn('[SAM] 로드 시도 실패:', opts, err)
+          lastError = err
+        }
+      }
+      throw lastError ?? new Error('SAM 모델을 불러올 수 없습니다.')
     })()
     // 실패 시 다음 시도에서 다시 로드할 수 있도록 캐시를 비운다.
     bundlePromise.catch(() => {

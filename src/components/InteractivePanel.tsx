@@ -88,7 +88,12 @@ export default function InteractivePanel({ source }: Props) {
       .catch((err) => {
         console.error(err)
         if (cancelled) return
-        setSessionError('모델을 불러오지 못했어요. 네트워크를 확인하고 새로고침해 주세요.')
+        const detail =
+          err instanceof Error ? err.message : String(err ?? '')
+        setSessionError(
+          '모델을 불러오지 못했어요. 네트워크를 확인하고 새로고침해 주세요.' +
+            (detail ? `\n(상세: ${detail.slice(0, 160)})` : ''),
+        )
         setSessionStatus('error')
       })
 
