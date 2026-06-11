@@ -2,9 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vitejs.dev/config/
-export default defineConfig(({ command }) => ({
-  // 로컬 개발(serve)은 루트(/)에서, GitHub Pages 배포 빌드는 /nukki-cutter/ 하위 경로에서 동작.
-  base: command === 'build' ? '/nukki-cutter/' : '/',
+export default defineConfig({
+  // dev · preview · 빌드 모두 GitHub Pages 와 동일한 /nukki-cutter/ 경로로 통일.
+  // (PWA 매니페스트·서비스워커 경로가 환경마다 어긋나지 않게 하기 위함)
+  base: '/nukki-cutter/',
   plugins: [react()],
   server: {
     // 로컬 개발 시 누끼 모델(@imgly/background-removal)이 멀티스레드 WASM 을 쓸 수 있도록
@@ -18,4 +19,4 @@ export default defineConfig(({ command }) => ({
   optimizeDeps: {
     exclude: ['@imgly/background-removal'],
   },
-}))
+})
