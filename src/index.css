@@ -236,6 +236,28 @@ body {
   cursor: default;
 }
 
+/* 결과 다듬기(복원/제거) */
+.result-view {
+  display: block;
+  max-width: 100%;
+  max-height: 66vh;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+}
+
+.touch-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hint-mini {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .swatches {
   display: inline-flex;
   align-items: center;
