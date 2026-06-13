@@ -33,6 +33,11 @@ export default function InteractivePanel({ source }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [modalBlob, setModalBlob] = useState<Blob | null>(null)
   const resultBlob = useRef<Blob | null>(null)
+  // 포인터 핸들러에서 최신 작업 상태를 참조하기 위한 ref
+  const workingRef = useRef<null | 'ai' | 'manual'>(null)
+  workingRef.current = working
+  /** 누끼 작업 중 — 브러시 편집·도구 변경을 잠근다 */
+  const busy = working !== null
 
   const stageRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
@@ -173,6 +178,7 @@ export default function InteractivePanel({ source }: Props) {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      if (workingRef.current) return // 누끼 작업 중에는 편집 금지
       e.currentTarget.setPointerCapture(e.pointerId)
       drawing.current = true
       lastPt.current = null
@@ -284,12 +290,14 @@ export default function InteractivePanel({ source }: Props) {
           <button
             className={`chip${tool === 'brush' ? ' chip--on' : ''}`}
             onClick={() => setTool('brush')}
+            disabled={busy}
           >
             🖌 브러시
           </button>
           <button
             className={`chip${tool === 'erase' ? ' chip--on' : ''}`}
             onClick={() => setTool('erase')}
+            disabled={busy}
           >
             🧽 지우개
           </button>
@@ -301,6 +309,7 @@ export default function InteractivePanel({ source }: Props) {
                 style={{ background: c }}
                 aria-label={`브러시 색 ${c}`}
                 onClick={() => setColor(c)}
+                disabled={busy}
               />
             ))}
           </span>
@@ -312,10 +321,15 @@ export default function InteractivePanel({ source }: Props) {
               max={140}
               value={brush}
               onChange={(e) => setBrush(Number(e.target.value))}
+              disabled={busy}
             />
           </label>
         </div>
-        <button className="chip chip--ghost" onClick={clearMask} disabled={!hasPaint}>
+        <button
+          className="chip chip--ghost"
+          onClick={clearMask}
+          disabled={!hasPaint || busy}
+        >
           전체 지우기
         </button>
       </div>
@@ -334,7 +348,7 @@ export default function InteractivePanel({ source }: Props) {
               />
               <canvas
                 ref={overlayRef}
-                className="brush-overlay"
+                className={`brush-overlay${busy ? ' brush-overlay--locked' : ''}`}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={endStroke}

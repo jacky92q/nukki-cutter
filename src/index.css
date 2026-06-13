@@ -230,6 +230,12 @@ body {
   cursor: none;
 }
 
+/* 누끼 작업 중에는 브러시 입력을 막는다 */
+.brush-overlay--locked {
+  pointer-events: none;
+  cursor: default;
+}
+
 .swatches {
   display: inline-flex;
   align-items: center;
@@ -252,6 +258,11 @@ body {
   transform: scale(1.12);
 }
 
+.swatch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .brush-size {
   display: inline-flex;
   align-items: center;
@@ -260,6 +271,14 @@ body {
   font-weight: 600;
   color: var(--navy-deep);
   padding-left: 6px;
+  white-space: nowrap; /* "굵기" 라벨이 세로로 꺾이지 않게 */
+  min-width: 0;
+}
+
+.brush-size input {
+  width: 120px;
+  max-width: 100%;
+  min-width: 0; /* 화면 밖으로 넘치지 않게 */
 }
 
 .brush-size input {
@@ -612,7 +631,11 @@ body {
 
 .seg-tools {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 10px;
+  min-width: 0;
 }
 
 .chip {
@@ -625,6 +648,7 @@ body {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap; /* 좁은 화면에서 글자가 세로로 꺾이지 않게 */
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 
@@ -772,8 +796,31 @@ body {
   }
   .actions {
     justify-content: stretch;
+    flex-wrap: wrap;
   }
   .actions .btn {
+    flex: 1;
+    justify-content: center;
+  }
+  /* 도구 막대를 세로로 정리하고 슬라이더는 한 줄 전체를 쓰게 */
+  .seg-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .seg-toolbar > .chip--ghost {
+    align-self: flex-start;
+  }
+  .brush-size {
+    flex: 1 1 100%;
+  }
+  .brush-size input {
+    flex: 1;
+    width: auto;
+  }
+  .modal {
+    padding: 16px;
+  }
+  .modal__actions .btn {
     flex: 1;
     justify-content: center;
   }
