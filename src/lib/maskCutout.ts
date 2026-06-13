@@ -133,137 +133,110 @@ export async function compositeCutout(
   return toPng(oc)
 }
 
-interface EdgeTouch {
-  left: number
-  right: number
-  top: number
-  bottom: number
-}
-
-/** 박스를 크롭→ISNet 누끼 후, 결과 알파가 크롭 가장자리에 닿았는지도 분석한다. */
-async function cutAndAnalyze(
-  img: HTMLImageElement,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  quality: Quality,
-  onProgress?: (p: ProgressInfo) => void,
-): Promise<{ canvas: HTMLCanvasElement; touch: EdgeTouch; cw: number; ch: number }> {
-  const cw = x2 - x1
-  const ch = y2 - y1
-
-  // 작은 오브젝트는 크롭을 1024px 까지 고품질 확대해서 추론한다.
-  // 모델 입력 해상도를 꽉 채워 쓰게 되어 경계 매트가 훨씬 정밀해진다.
-  // (결과는 다시 원본 크기로 줄여 합성 — 픽셀 정보는 원본 그대로)
-  const TARGET = 1024
-  const f = Math.max(cw, ch) < TARGET ? TARGET / Math.max(cw, ch) : 1
-  const iw = Math.round(cw * f)
-  const ih = Math.round(ch * f)
-
-  const cc = document.createElement('canvas')
-  cc.width = iw
-  cc.height = ih
-  const cctx = cc.getContext('2d')!
-  cctx.imageSmoothingEnabled = true
-  cctx.imageSmoothingQuality = 'high'
-  cctx.drawImage(img, x1, y1, cw, ch, 0, 0, iw, ih)
-  const cropBlob = await toPng(cc)
-
-  const cutBlob = await cutout(cropBlob, quality, onProgress)
-  const u = URL.createObjectURL(cutBlob)
-  try {
-    const cutImg = await loadImage(u)
-    const ac = document.createElement('canvas')
-    ac.width = cw
-    ac.height = ch
-    const actx = ac.getContext('2d')!
-    actx.imageSmoothingEnabled = true
-    actx.imageSmoothingQuality = 'high'
-    actx.drawImage(cutImg, 0, 0, iw, ih, 0, 0, cw, ch)
-    const d = actx.getImageData(0, 0, cw, ch).data
-    const touch: EdgeTouch = { left: 0, right: 0, top: 0, bottom: 0 }
-    for (let y = 0; y < ch; y++) {
-      if (d[(y * cw + 1) * 4 + 3] > 16) touch.left++
-      if (d[(y * cw + cw - 2) * 4 + 3] > 16) touch.right++
-    }
-    for (let x = 0; x < cw; x++) {
-      if (d[(cw + x) * 4 + 3] > 16) touch.top++
-      if (d[((ch - 2) * cw + x) * 4 + 3] > 16) touch.bottom++
-    }
-    return { canvas: ac, touch, cw, ch }
-  } finally {
-    URL.revokeObjectURL(u)
-  }
-}
-
 /**
- * AI 인식 누끼: 칠한 영역의 박스(+여유)를 크롭해 ISNet 으로 피사체를 추출하고,
- * 결과를 원본 좌표에 합성한 전체 크기 투명 PNG 를 돌려준다.
+ * AI 인식 누끼.
  *
- * 누끼 결과가 크롭 가장자리에 닿아 있으면(=오브젝트가 잘린 신호) 닿은 방향으로
- * 박스를 자동 확장해 최대 2회 재시도한다 — 대충 칠해도 오브젝트가 잘리지 않게.
+ * 핵심: 칠한 영역만 크롭해서 모델에 넣으면, 사용자가 오브젝트 전체를 칠하지
+ * 않은 경우 크롭 밖의 부분(예: 모자 챙 끝)이 잘려나간다. 그래서 자동 모드와
+ * 똑같이 "이미지 전체"를 ISNet 으로 누끼한 뒤(=잘림 없음), 그 결과에서
+ * 사용자가 칠한 오브젝트와 "연결된 덩어리"만 골라낸다. 다른 오브젝트는 버린다.
  */
 export async function aiRegionCutout(
-  sourceUrl: string,
+  source: { url: string; blob: Blob },
   paint: HTMLCanvasElement,
   quality: Quality,
   onProgress?: (p: ProgressInfo) => void,
 ): Promise<Blob> {
-  const box = paintedBBox(paint)
-  if (!box) throw new Error('칠한 영역이 없어요.')
+  // 1) 전체 이미지로 누끼 (자동 모드와 동일 → 모자 등 오브젝트가 온전히 잡힘)
+  const cutBlob = await cutout(source.blob, quality, onProgress)
+  const cutImg = await loadImage(URL.createObjectURL(cutBlob))
+  const W = cutImg.naturalWidth
+  const H = cutImg.naturalHeight
 
-  const img = await loadImage(sourceUrl)
-  const W = img.naturalWidth
-  const H = img.naturalHeight
+  const oc = document.createElement('canvas')
+  oc.width = W
+  oc.height = H
+  const octx = oc.getContext('2d')!
+  octx.drawImage(cutImg, 0, 0, W, H)
+  URL.revokeObjectURL(cutImg.src)
+  const out = octx.getImageData(0, 0, W, H)
+  const alpha = out.data
 
-  // 칠한 박스에 18%(최소 24px) 여유를 둔 시작 박스.
-  const mx = Math.max(24, (box.x2 - box.x1) * 0.18)
-  const my = Math.max(24, (box.y2 - box.y1) * 0.18)
-  let x1 = Math.max(0, Math.floor(box.x1 - mx))
-  let y1 = Math.max(0, Math.floor(box.y1 - my))
-  let x2 = Math.min(W, Math.ceil(box.x2 + mx))
-  let y2 = Math.min(H, Math.ceil(box.y2 + my))
-  if (x2 - x1 < 8 || y2 - y1 < 8) throw new Error('칠한 영역이 너무 작아요.')
-
-  for (let attempt = 0; ; attempt++) {
-    const used = { x1, y1, x2, y2 }
-    const r = await cutAndAnalyze(img, x1, y1, x2, y2, quality, onProgress)
-
-    // 가장자리에 닿은 변이 있으면 그 방향으로 30% 확장해 재시도.
-    const thX = Math.max(4, r.cw * 0.02)
-    const thY = Math.max(4, r.ch * 0.02)
-    const growX = Math.ceil((x2 - x1) * 0.3)
-    const growY = Math.ceil((y2 - y1) * 0.3)
-    let grew = false
-    if (attempt < 2) {
-      if (r.touch.left > thY && x1 > 0) {
-        x1 = Math.max(0, x1 - growX)
-        grew = true
-      }
-      if (r.touch.right > thY && x2 < W) {
-        x2 = Math.min(W, x2 + growX)
-        grew = true
-      }
-      if (r.touch.top > thX && y1 > 0) {
-        y1 = Math.max(0, y1 - growY)
-        grew = true
-      }
-      if (r.touch.bottom > thX && y2 < H) {
-        y2 = Math.min(H, y2 + growY)
-        grew = true
-      }
-    }
-    if (grew) {
-      onProgress?.({ stage: '잘린 부분 감지 — 영역 넓혀 다시 인식 중', ratio: 0 })
-      continue
-    }
-
-    // 전체 크기 캔버스의 원래 위치에 합성.
-    const oc = document.createElement('canvas')
-    oc.width = W
-    oc.height = H
-    oc.getContext('2d')!.drawImage(r.canvas, used.x1, used.y1)
-    return toPng(oc)
+  // 2) 칠한 마스크(원본 크기일 수 있음)를 누끼 결과 크기에 맞춰 샘플링
+  const pctx = paint.getContext('2d')!
+  const pData = pctx.getImageData(0, 0, paint.width, paint.height).data
+  const psx = paint.width / W
+  const psy = paint.height / H
+  const painted = (x: number, y: number): boolean => {
+    const px = Math.min(paint.width - 1, Math.floor(x * psx))
+    const py = Math.min(paint.height - 1, Math.floor(y * psy))
+    return pData[(py * paint.width + px) * 4 + 3] > 0
   }
+
+  // 3) 칠한 곳 ∩ 불투명 픽셀을 씨앗으로, 불투명 영역을 flood fill →
+  //    칠한 오브젝트와 연결된 덩어리만 선택
+  const TH = 32
+  const visited = new Uint8Array(W * H)
+  const stack = new Int32Array(W * H)
+  let sp = 0
+  let seeds = 0
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x
+      if (alpha[i * 4 + 3] > TH && painted(x, y)) {
+        visited[i] = 1
+        stack[sp++] = i
+        seeds++
+      }
+    }
+  }
+
+  if (seeds === 0) {
+    // 칠한 곳에 피사체가 없으면(빈 곳을 칠함) 칠한 그대로라도 내보낸다.
+    const m = maskFromPaint(paint)
+    if (!m) throw new Error('칠한 영역이 없어요.')
+    return compositeCutout(source.url, m, 1)
+  }
+
+  while (sp > 0) {
+    const i = stack[--sp]
+    const x = i % W
+    const y = (i - x) / W
+    // 4-이웃
+    if (x > 0) {
+      const n = i - 1
+      if (!visited[n] && alpha[n * 4 + 3] > TH) {
+        visited[n] = 1
+        stack[sp++] = n
+      }
+    }
+    if (x < W - 1) {
+      const n = i + 1
+      if (!visited[n] && alpha[n * 4 + 3] > TH) {
+        visited[n] = 1
+        stack[sp++] = n
+      }
+    }
+    if (y > 0) {
+      const n = i - W
+      if (!visited[n] && alpha[n * 4 + 3] > TH) {
+        visited[n] = 1
+        stack[sp++] = n
+      }
+    }
+    if (y < H - 1) {
+      const n = i + W
+      if (!visited[n] && alpha[n * 4 + 3] > TH) {
+        visited[n] = 1
+        stack[sp++] = n
+      }
+    }
+  }
+
+  // 4) 선택된 덩어리 밖은 투명 처리
+  for (let i = 0; i < W * H; i++) {
+    if (!visited[i]) alpha[i * 4 + 3] = 0
+  }
+  octx.putImageData(out, 0, 0)
+  return toPng(oc)
 }

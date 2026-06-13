@@ -237,7 +237,7 @@ export default function InteractivePanel({ source }: Props) {
     setError(null)
     setProgress({ stage: '준비 중', ratio: 0 })
     try {
-      const blob = await aiRegionCutout(source.url, mask, 'best', setProgress)
+      const blob = await aiRegionCutout(source, mask, 'best', setProgress)
       deliver(blob)
     } catch (err) {
       console.error(err)
