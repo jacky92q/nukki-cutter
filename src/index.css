@@ -132,6 +132,10 @@ body {
   color: var(--muted);
 }
 
+.dropzone__paste {
+  margin: 18px auto 0;
+}
+
 .dropzone__error {
   margin: 16px 0 0;
   color: var(--danger);

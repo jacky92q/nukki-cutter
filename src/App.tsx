@@ -74,6 +74,54 @@ export default function App() {
     setError(null)
   }, [])
 
+  // 클립보드(Ctrl/Cmd+V)로 붙여넣은 이미지 받기 — 파일 첨부가 막힌 환경 대비.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (file) {
+            e.preventDefault()
+            acceptFile(file)
+            return
+          }
+        }
+      }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [acceptFile])
+
+  // "클립보드에서 붙여넣기" 버튼 — Clipboard API 로 직접 읽는다(권한 필요할 수 있음).
+  const pasteFromClipboard = useCallback(async () => {
+    try {
+      const clip = navigator.clipboard as Clipboard & {
+        read?: () => Promise<ClipboardItem[]>
+      }
+      if (!clip?.read) {
+        setError('이 브라우저는 버튼 붙여넣기를 지원하지 않아요. Ctrl/Cmd+V 로 붙여넣어 보세요.')
+        return
+      }
+      const items = await clip.read()
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'))
+        if (type) {
+          const blob = await item.getType(type)
+          await acceptFile(
+            new File([blob], 'pasted.png', { type: blob.type || 'image/png' }),
+          )
+          return
+        }
+      }
+      setError('클립보드에 이미지가 없어요. 이미지를 복사한 뒤 다시 눌러 주세요.')
+    } catch (err) {
+      console.error(err)
+      setError('클립보드를 읽지 못했어요. Ctrl/Cmd+V 로 직접 붙여넣어 보세요.')
+    }
+  }, [acceptFile])
+
   return (
     <div className="page">
       <header className="header">
@@ -111,11 +159,21 @@ export default function App() {
               ⬆
             </div>
             <p className="dropzone__title">
-              {loading ? '이미지 불러오는 중…' : '이미지를 여기에 끌어다 놓으세요'}
+              {loading ? '이미지 불러오는 중…' : '이미지를 여기에 끌어다 놓거나 붙여넣으세요'}
             </p>
             <p className="dropzone__sub">
-              또는 클릭해서 사진첩·파일에서 선택 · PNG · JPG · WebP
+              클릭해서 선택 · <b>Ctrl/Cmd+V 로 붙여넣기</b> · 드래그 앤 드롭 · PNG · JPG · WebP
             </p>
+            <button
+              type="button"
+              className="btn btn--ghost dropzone__paste"
+              onClick={(e) => {
+                e.stopPropagation()
+                pasteFromClipboard()
+              }}
+            >
+              📋 클립보드에서 붙여넣기
+            </button>
             {error && <p className="dropzone__error">{error}</p>}
           </section>
         ) : (
